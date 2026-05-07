@@ -1,0 +1,19 @@
+[package]
+name = "midgard-agent"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+midgard-core = { path = "../midgard-core" }
+midgard-tools = { path = "../midgard-tools" }
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true

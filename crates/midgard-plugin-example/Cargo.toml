@@ -1,0 +1,16 @@
+[package]
+name = "midgard-plugin-example"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+midgard-controller = { path = "../midgard-controller" }
+midgard-core = { path = "../midgard-core" }
+midgard-tools = { path = "../midgard-tools" }
+serde_json.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true

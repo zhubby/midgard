@@ -1,0 +1,21 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Bun / Next.js
+node_modules/
+.next/
+out/
+dist/
+*.tsbuildinfo
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Logs and local state
+*.log
+.DS_Store
+.superpowers/
+.cursor/plans/
