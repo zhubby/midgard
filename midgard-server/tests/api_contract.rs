@@ -7,6 +7,7 @@ use midgard_server::{app, app_with_provider, app_with_storage};
 use midgard_storage::MemoryAgentSessionStore;
 use serde_json::Value;
 use std::sync::Arc;
+use tokio::time::{sleep, Duration};
 use tower::ServiceExt;
 
 #[tokio::test]
@@ -154,6 +155,7 @@ async fn run_endpoint_executes_agent_loop_and_persists_trace() {
     let id = created["id"].as_str().unwrap();
 
     let response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -163,21 +165,32 @@ async fn run_endpoint_executes_agent_loop_and_persists_trace() {
         )
         .await
         .unwrap();
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
     let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     let json: Value = serde_json::from_slice(&body).unwrap();
 
-    assert_eq!(json["status"], "completed");
-    assert_eq!(
-        json["session"]["messages"][1]["tool_calls"][0]["name"],
-        "complete_task"
-    );
-    assert!(json["events"].as_array().unwrap().iter().any(|event| {
-        event["type"] == "tool_result"
-            && event["result"]["output"]
-                .as_str()
-                .unwrap()
-                .contains("Redis is healthy")
-    }));
+    assert_eq!(json["status"], "running");
+    assert_eq!(json["session_id"], id);
+    assert!(json["run_id"].as_str().is_some());
+
+    sleep(Duration::from_millis(20)).await;
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/workspace/events?session_id={id}&once=true"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let text = String::from_utf8(body.to_vec()).unwrap();
+
+    assert!(text.contains("event: connected"));
+    assert!(text.contains("event: agent_run_started"));
+    assert!(text.contains("event: tool_result_received"));
+    assert!(text.contains("Redis is healthy"));
 }
 
 #[tokio::test]
@@ -206,6 +219,28 @@ async fn stream_endpoint_emits_ordered_sse_run_events() {
     assert!(text.contains("event: assistant_message"));
     assert!(text.contains("event: completed"));
     assert!(text.contains("Redis is ready"));
+}
+
+#[tokio::test]
+async fn workspace_events_endpoint_emits_connected_snapshot() {
+    let app = app();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/workspace/events?once=true")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let text = String::from_utf8(body.to_vec()).unwrap();
+
+    assert!(text.contains("id:"));
+    assert!(text.contains("event: connected"));
+    assert!(text.contains("\"protocol_version\":1"));
+    assert!(text.contains("event: middleware_snapshot"));
 }
 
 #[tokio::test]
@@ -257,9 +292,12 @@ async fn approval_endpoint_records_decision_and_next_run_resumes() {
         )
         .await
         .unwrap();
+    assert_eq!(first.status(), StatusCode::ACCEPTED);
     let body = to_bytes(first.into_body(), usize::MAX).await.unwrap();
     let json: Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(json["status"], "awaiting_approval");
+    assert_eq!(json["status"], "running");
+
+    sleep(Duration::from_millis(20)).await;
 
     let history = app
         .clone()
@@ -324,29 +362,23 @@ async fn approval_endpoint_records_decision_and_next_run_resumes() {
         "maintenance window"
     );
 
-    let second = app
+    sleep(Duration::from_millis(20)).await;
+
+    let events = app
         .clone()
         .oneshot(
             Request::builder()
-                .method("POST")
-                .uri(format!("/api/agent/sessions/{id}/runs"))
+                .uri(format!("/api/workspace/events?session_id={id}&once=true"))
                 .body(Body::empty())
                 .unwrap(),
         )
         .await
         .unwrap();
-    let body = to_bytes(second.into_body(), usize::MAX).await.unwrap();
-    let json: Value = serde_json::from_slice(&body).unwrap();
-
-    assert_eq!(json["status"], "completed");
-    assert!(json["session"]["messages"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|message| message["content"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("Restart requested")));
+    let body = to_bytes(events.into_body(), usize::MAX).await.unwrap();
+    let text = String::from_utf8(body.to_vec()).unwrap();
+    assert!(text.contains("event: approval_decided"));
+    assert!(text.contains("event: agent_run_completed"));
+    assert!(text.contains("Restart requested"));
 
     let history = app
         .oneshot(

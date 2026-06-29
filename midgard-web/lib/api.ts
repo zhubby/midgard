@@ -1,9 +1,9 @@
 import type {
   ApprovalRecord,
-  AgentRunResponse,
   AgentSession,
   ApprovalResponse,
   PluginResponse,
+  RunAccepted,
   ToolDefinition,
 } from "./types";
 
@@ -47,8 +47,8 @@ export function sendMessage(
   });
 }
 
-export function runAgent(sessionId: string): Promise<AgentRunResponse> {
-  return request<AgentRunResponse>(`/api/agent/sessions/${sessionId}/runs`, {
+export function runAgent(sessionId: string): Promise<RunAccepted> {
+  return request<RunAccepted>(`/api/agent/sessions/${sessionId}/runs`, {
     method: "POST",
   });
 }
@@ -58,11 +58,12 @@ export function decideApproval(
   decision: "approve" | "reject",
   actor: string,
   reason?: string,
+  resume = true,
 ): Promise<ApprovalResponse> {
   return request<ApprovalResponse>(`/api/agent/sessions/${sessionId}/approvals`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ decision, actor, reason }),
+    body: JSON.stringify({ decision, actor, reason, resume }),
   });
 }
 

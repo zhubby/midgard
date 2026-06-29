@@ -3,9 +3,10 @@ use midgard_core::{MidgardError, MidgardResult, RiskLevel};
 use midgard_tools::ToolResult;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use ts_rs::TS;
 use uuid::Uuid;
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentRole {
     System,
@@ -14,10 +15,11 @@ pub enum AgentRole {
     Tool,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
 pub struct AgentToolCall {
     pub id: String,
     pub name: String,
+    #[ts(type = "unknown")]
     pub arguments: Value,
     pub raw_arguments: String,
 }
@@ -49,7 +51,7 @@ impl AgentToolCall {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
 pub struct AgentMessage {
     pub role: AgentRole,
     pub content: String,
@@ -103,7 +105,7 @@ impl AgentMessage {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentRunStatus {
     Running,
@@ -115,8 +117,9 @@ pub enum AgentRunStatus {
     Failed,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
 pub struct PendingApproval {
+    #[ts(type = "string")]
     pub id: Uuid,
     pub tool_call: AgentToolCall,
     pub risk_level: RiskLevel,
@@ -135,7 +138,7 @@ impl PendingApproval {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum ApprovalDecision {
     Approve,
@@ -155,7 +158,7 @@ impl ApprovalDecision {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum ApprovalStatus {
     Pending,
@@ -173,9 +176,11 @@ impl ApprovalStatus {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
 pub struct ApprovalRecord {
+    #[ts(type = "string")]
     pub id: Uuid,
+    #[ts(type = "string")]
     pub session_id: Uuid,
     pub tool_call: AgentToolCall,
     pub risk_level: RiskLevel,
@@ -221,8 +226,9 @@ fn utc_now_rfc3339() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true)
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
 pub struct AgentSession {
+    #[ts(type = "string")]
     pub id: Uuid,
     pub messages: Vec<AgentMessage>,
     pub iteration_count: usize,
@@ -261,7 +267,7 @@ impl AgentSession {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentRunEvent {
     ModelDelta {

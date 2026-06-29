@@ -4,11 +4,13 @@ use async_trait::async_trait;
 use midgard_core::{MidgardError, MidgardResult, RiskLevel};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use ts_rs::TS;
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
 pub struct ToolDefinition {
     pub name: String,
     pub description: String,
+    #[ts(type = "unknown")]
     pub parameters_schema: Value,
     pub risk_level: RiskLevel,
     pub requires_approval: bool,
@@ -33,7 +35,7 @@ impl ToolDefinition {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
 pub struct ToolResult {
     pub success: bool,
     pub output: String,

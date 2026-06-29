@@ -196,6 +196,16 @@ p {
   box-shadow: 0 0 0 3px hsl(var(--ready) / 0.14);
 }
 
+.status-pill.connecting span {
+  background: hsl(var(--warning));
+  box-shadow: 0 0 0 3px hsl(var(--warning) / 0.14);
+}
+
+.status-pill.disconnected span {
+  background: hsl(var(--destructive));
+  box-shadow: 0 0 0 3px hsl(var(--destructive) / 0.12);
+}
+
 .button {
   display: inline-flex;
   align-items: center;
@@ -216,6 +226,13 @@ p {
 
 .button:hover {
   transform: translateY(-1px);
+}
+
+.button:disabled,
+textarea:disabled {
+  cursor: not-allowed;
+  opacity: 0.56;
+  transform: none;
 }
 
 .button:focus-visible,
@@ -335,6 +352,17 @@ textarea:focus-visible {
   padding: 0 10px;
 }
 
+.inline-alert {
+  margin: 14px 20px 0;
+  border: 1px solid hsl(var(--destructive) / 0.22);
+  border-radius: var(--radius);
+  background: hsl(var(--destructive) / 0.08);
+  color: hsl(0 72% 42%);
+  font-size: 0.86rem;
+  line-height: 1.45;
+  padding: 10px 12px;
+}
+
 .chat-thread {
   display: flex;
   flex: 1 1 auto;
@@ -415,6 +443,11 @@ textarea:focus-visible {
   background: hsl(var(--muted) / 0.62);
 }
 
+.chat-message.streaming > div {
+  border-color: hsl(var(--info) / 0.22);
+  background: hsl(var(--info) / 0.06);
+}
+
 .message-meta {
   justify-content: space-between;
   gap: 10px;
@@ -491,6 +524,30 @@ textarea:focus-visible {
   color: hsl(var(--muted-foreground));
   font-size: 0.82rem;
   line-height: 1.45;
+}
+
+.approval-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  margin-top: 14px;
+  border: 1px solid hsl(var(--warning) / 0.32);
+  border-radius: var(--radius);
+  background: hsl(var(--warning) / 0.08);
+  padding: 12px;
+}
+
+.approval-card p:not(.section-kicker) {
+  margin-top: 4px;
+  color: hsl(var(--muted-foreground));
+  font-size: 0.84rem;
+  line-height: 1.45;
+}
+
+.approval-actions {
+  display: flex;
+  gap: 8px;
 }
 
 .composer {
@@ -743,6 +800,15 @@ textarea::placeholder {
   align-items: start;
 }
 
+.empty-row {
+  border: 1px dashed hsl(var(--border));
+  border-radius: var(--radius);
+  color: hsl(var(--muted-foreground));
+  font-size: 0.86rem;
+  line-height: 1.45;
+  padding: 14px;
+}
+
 @media (max-width: 1160px) {
   .workspace-grid {
     grid-template-columns: 1fr;
@@ -799,6 +865,15 @@ textarea::placeholder {
   .workload-row {
     grid-template-columns: 1fr;
     gap: 10px;
+  }
+
+  .approval-card,
+  .approval-row {
+    grid-template-columns: 1fr;
+  }
+
+  .approval-actions {
+    flex-direction: column;
   }
 
   .risk-label {

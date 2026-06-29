@@ -1,22 +1,35 @@
 "use client";
 
-import { type FormEvent, useState } from "react";
+import { type FormEvent } from "react";
+import type {
+  AgentMessage,
+  AgentRunStatus,
+  PendingApproval,
+} from "@/lib/types";
+import type { WorkspaceConnectionStatus } from "@/lib/events";
 
-type ChatRole = "assistant" | "user" | "tool";
 type TraceTone = "ready" | "pending" | "warn";
 
-interface ChatMessage {
+export interface AgentTraceItem {
   id: string;
-  role: ChatRole;
-  eyebrow: string;
-  content: string;
-  meta?: string;
-}
-
-interface TraceStep {
   label: string;
   detail: string;
   tone: TraceTone;
+}
+
+interface AgentConsoleProps {
+  busy: boolean;
+  connectionStatus: WorkspaceConnectionStatus;
+  draft: string;
+  error: string | null;
+  messages: AgentMessage[];
+  onApproval: (decision: "approve" | "reject") => void;
+  onDraftChange: (draft: string) => void;
+  onSend: (prompt: string) => void;
+  pendingApproval: PendingApproval | null;
+  runStatus: AgentRunStatus | "idle";
+  streamingAssistant: string;
+  trace: AgentTraceItem[];
 }
 
 const quickPrompts = [
@@ -25,122 +38,72 @@ const quickPrompts = [
   "Plan a safe Kafka restart",
 ];
 
-const initialMessages: ChatMessage[] = [
-  {
-    id: "welcome",
-    role: "assistant",
-    eyebrow: "Midgard agent",
-    meta: "standing by",
-    content:
-      "Describe the operational outcome. I will keep the plan scoped to tools, risk, and approval boundaries.",
-  },
-  {
-    id: "tool-catalog",
-    role: "tool",
-    eyebrow: "Available context",
-    meta: "workspace context",
-    content:
-      "Plugins: Redis, Kafka, PostgreSQL. Mutating actions stay approval-gated.",
-  },
-];
-
-const defaultTrace: TraceStep[] = [
-  {
-    label: "Intent parsed",
-    detail: "Target, namespace, and operation type identified from the prompt.",
-    tone: "ready",
-  },
-  {
-    label: "Risk classified",
-    detail: "Read-only inspection stays low risk. Mutations require approval.",
-    tone: "ready",
-  },
-  {
-    label: "Tool plan drafted",
-    detail: "Plan is staged for operator review before any execution.",
-    tone: "pending",
-  },
-];
-
-function makeMessageId(prefix: string) {
-  return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+function messageLabel(message: AgentMessage) {
+  switch (message.role) {
+    case "assistant":
+      return "Midgard agent";
+    case "tool":
+      return message.tool_call_id ? "Tool result" : "Tool";
+    case "system":
+      return "System";
+    case "user":
+      return "Operator";
+  }
 }
 
-function buildAgentReply(prompt: string) {
-  const text = prompt.toLowerCase();
-
-  if (text.includes("kafka")) {
-    return "Kafka restart should be staged by broker, with partition leadership checked before and after each step. Mark the restart operation as high risk and request approval before any disruptive action.";
+function messageMeta(message: AgentMessage) {
+  if (message.tool_calls && message.tool_calls.length > 0) {
+    return `${message.tool_calls.length} tool call${
+      message.tool_calls.length === 1 ? "" : "s"
+    }`;
   }
-
-  if (text.includes("risk")) {
-    return "Current middleware risk is concentrated in write paths: failover, restart, scaling, and config changes. Read-only inspection can proceed without approval, but execution should expose the selected tool and arguments first.";
-  }
-
-  if (text.includes("redis")) {
-    return "Redis should be inspected through workload health, replica lag, recent events, and configured persistence. Failover readiness depends on replica freshness and whether Sentinel or controller ownership is healthy.";
-  }
-
-  return "I would turn that goal into a short tool plan, classify the operational risk, and surface any approval requirement before execution.";
+  if (message.tool_call_id) return message.tool_call_id.slice(0, 8);
+  return message.role === "assistant" ? "committed" : "message";
 }
 
-function buildTrace(prompt: string): TraceStep[] {
-  const isMutation = /(restart|scale|failover|delete|apply|update)/i.test(prompt);
-
-  return [
-    {
-      label: "Goal normalized",
-      detail: "Converted the operator request into target, action, and success signal.",
-      tone: "ready",
-    },
-    {
-      label: isMutation ? "Approval required" : "Approval not required",
-      detail: isMutation
-        ? "The requested action can alter runtime state and must be reviewed."
-        : "The request can be handled with read-only inspection tools.",
-      tone: isMutation ? "warn" : "ready",
-    },
-    {
-      label: "Execution held",
-      detail: "This screen is intentionally disconnected from backend APIs.",
-      tone: "pending",
-    },
-  ];
+function messageAvatar(role: AgentMessage["role"]) {
+  switch (role) {
+    case "assistant":
+      return "A";
+    case "tool":
+      return "T";
+    case "system":
+      return "S";
+    case "user":
+      return "U";
+  }
 }
 
-export function AgentConsole() {
-  const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
-  const [trace, setTrace] = useState<TraceStep[]>(defaultTrace);
-  const [draft, setDraft] = useState(
-    "Inspect Redis in the default namespace and report whether it is healthy.",
-  );
-
+export function AgentConsole({
+  busy,
+  connectionStatus,
+  draft,
+  error,
+  messages,
+  onApproval,
+  onDraftChange,
+  onSend,
+  pendingApproval,
+  runStatus,
+  streamingAssistant,
+  trace,
+}: AgentConsoleProps) {
   function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
-
-    const prompt = draft.trim();
-    if (!prompt) return;
-
-    setMessages((current) => [
-      ...current,
-      {
-        id: makeMessageId("user"),
-        role: "user",
-        eyebrow: "Operator",
-        meta: "now",
-        content: prompt,
-      },
-      {
-        id: makeMessageId("assistant"),
-        role: "assistant",
-        eyebrow: "Midgard agent",
-        meta: "draft plan",
-        content: buildAgentReply(prompt),
-      },
-    ]);
-    setTrace(buildTrace(prompt));
-    setDraft("");
+    onSend(draft);
   }
+
+  const traceItems =
+    trace.length > 0
+      ? trace
+      : [
+          {
+            id: "waiting",
+            label: "Waiting for events",
+            detail: "Submit an operations goal to start a live agent run.",
+            tone: "pending" as const,
+          },
+        ];
 
   return (
     <section className="workspace-panel agent-panel" aria-labelledby="agent-title">
@@ -149,51 +112,90 @@ export function AgentConsole() {
           <p className="section-kicker">Agent chat</p>
           <h2 id="agent-title">Plan, inspect, and gate operations</h2>
         </div>
-        <span className="badge badge-secondary">Draft mode</span>
+        <span className="badge badge-secondary">{runStatus}</span>
       </div>
 
       <div className="quick-prompts" aria-label="Prompt shortcuts">
         {quickPrompts.map((prompt) => (
           <button
             className="button button-ghost prompt-chip"
+            disabled={busy}
             key={prompt}
             type="button"
-            onClick={() => setDraft(prompt)}
+            onClick={() => onDraftChange(prompt)}
           >
             {prompt}
           </button>
         ))}
       </div>
 
+      {error && (
+        <div className="inline-alert" role="alert">
+          {error}
+        </div>
+      )}
+
       <div className="chat-thread" role="log" aria-live="polite">
-        {messages.map((message) => (
-          <article className={`chat-message ${message.role}`} key={message.id}>
+        {messages.length === 0 && !streamingAssistant && (
+          <article className="chat-message assistant">
             <span className="message-avatar" aria-hidden="true">
-              {message.role === "assistant"
-                ? "A"
-                : message.role === "tool"
-                  ? "T"
-                  : "U"}
+              A
             </span>
             <div>
               <div className="message-meta">
-                <span>{message.eyebrow}</span>
-                {message.meta && <small>{message.meta}</small>}
+                <span>Midgard agent</span>
+                <small>{connectionStatus}</small>
               </div>
-              <p>{message.content}</p>
+              <p>
+                Describe an operational outcome. The live trace will show model
+                output, tool calls, approval gates, and completion events.
+              </p>
+            </div>
+          </article>
+        )}
+
+        {messages.map((message, index) => (
+          <article
+            className={`chat-message ${message.role}`}
+            key={`${message.role}-${message.tool_call_id ?? index}-${index}`}
+          >
+            <span className="message-avatar" aria-hidden="true">
+              {messageAvatar(message.role)}
+            </span>
+            <div>
+              <div className="message-meta">
+                <span>{messageLabel(message)}</span>
+                <small>{messageMeta(message)}</small>
+              </div>
+              <p>{message.content || "Tool call requested."}</p>
             </div>
           </article>
         ))}
+
+        {streamingAssistant && (
+          <article className="chat-message assistant streaming">
+            <span className="message-avatar" aria-hidden="true">
+              A
+            </span>
+            <div>
+              <div className="message-meta">
+                <span>Midgard agent</span>
+                <small>streaming</small>
+              </div>
+              <p>{streamingAssistant}</p>
+            </div>
+          </article>
+        )}
       </div>
 
       <section className="trace-panel" aria-labelledby="trace-title">
         <div className="trace-header">
           <h3 id="trace-title">Execution trace</h3>
-          <span className="badge badge-outline">3 steps</span>
+          <span className="badge badge-outline">{traceItems.length} steps</span>
         </div>
         <ol className="trace-list">
-          {trace.map((step) => (
-            <li className={`trace-step ${step.tone}`} key={step.label}>
+          {traceItems.map((step) => (
+            <li className={`trace-step ${step.tone}`} key={step.id}>
               <span aria-hidden="true" />
               <div>
                 <strong>{step.label}</strong>
@@ -202,6 +204,37 @@ export function AgentConsole() {
             </li>
           ))}
         </ol>
+
+        {pendingApproval && (
+          <article className="approval-card">
+            <div>
+              <p className="section-kicker">Approval required</p>
+              <h3>{pendingApproval.tool_call.name}</h3>
+              <p>
+                {pendingApproval.risk_level} risk action awaiting operator
+                decision.
+              </p>
+            </div>
+            <div className="approval-actions">
+              <button
+                className="button button-outline"
+                disabled={busy}
+                type="button"
+                onClick={() => onApproval("reject")}
+              >
+                Reject
+              </button>
+              <button
+                className="button button-primary"
+                disabled={busy}
+                type="button"
+                onClick={() => onApproval("approve")}
+              >
+                Approve
+              </button>
+            </div>
+          </article>
+        )}
       </section>
 
       <form className="composer" onSubmit={handleSubmit}>
@@ -214,12 +247,17 @@ export function AgentConsole() {
           placeholder="Ask the agent to inspect, summarize, or plan a middleware operation..."
           rows={4}
           value={draft}
-          onChange={(e) => setDraft(e.target.value)}
+          disabled={busy}
+          onChange={(e) => onDraftChange(e.target.value)}
         />
         <div className="composer-actions">
-          <span>Review before execution.</span>
-          <button className="button button-primary" type="submit">
-            Send
+          <span>
+            {connectionStatus === "connected"
+              ? "Live events connected."
+              : "Waiting for workspace events."}
+          </span>
+          <button className="button button-primary" disabled={busy} type="submit">
+            {busy ? "Running" : "Send"}
           </button>
         </div>
       </form>

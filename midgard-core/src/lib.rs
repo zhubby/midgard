@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use ts_rs::TS;
 
 pub type MidgardResult<T> = Result<T, MidgardError>;
 
@@ -17,7 +18,7 @@ pub enum MidgardError {
     Storage(String),
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum RiskLevel {
     Low,
@@ -32,7 +33,7 @@ impl RiskLevel {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
 pub struct CapabilityDescriptor {
     pub id: String,
     pub name: String,
@@ -53,7 +54,7 @@ impl CapabilityDescriptor {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum CompletionStatus {
     Success,

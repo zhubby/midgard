@@ -8,3 +8,4 @@ version.workspace = true
 [dependencies]
 serde.workspace = true
 thiserror.workspace = true
+ts-rs.workspace = true

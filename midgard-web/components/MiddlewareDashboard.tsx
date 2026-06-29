@@ -1,122 +1,35 @@
-type Tone = "ready" | "warn" | "danger" | "neutral";
+import type {
+  ApprovalRecord,
+  MiddlewareDashboardState,
+  MiddlewareMetric,
+  MiddlewareWorkload,
+  PluginResponse,
+  ToolDefinition,
+} from "@/lib/types";
 
-interface Metric {
-  label: string;
-  value: string;
-  detail: string;
-  tone: Tone;
+interface MiddlewareDashboardProps {
+  approvals: ApprovalRecord[];
+  middleware: MiddlewareDashboardState;
+  plugins: PluginResponse[];
+  tools: ToolDefinition[];
 }
 
-interface Workload {
-  name: string;
-  kind: string;
-  namespace: string;
-  health: string;
-  saturation: number;
-  risk: string;
-  tone: Tone;
+function metricTone(metric: MiddlewareMetric) {
+  return metric.tone;
 }
 
-interface ToolCapability {
-  name: string;
-  risk: string;
-  approval: string;
+function workloadTone(workload: MiddlewareWorkload) {
+  return workload.tone;
 }
 
-const metrics: Metric[] = [
-  {
-    label: "Healthy workloads",
-    value: "12/14",
-    detail: "2 need attention",
-    tone: "ready",
-  },
-  {
-    label: "Approval queue",
-    value: "2",
-    detail: "high-risk actions",
-    tone: "warn",
-  },
-  {
-    label: "Registered tools",
-    value: "18",
-    detail: "7 gated",
-    tone: "neutral",
-  },
-  {
-    label: "Controller latency",
-    value: "118ms",
-    detail: "p95 mock sample",
-    tone: "ready",
-  },
-];
+export function MiddlewareDashboard({
+  approvals,
+  middleware,
+  plugins,
+  tools,
+}: MiddlewareDashboardProps) {
+  const gatedTools = tools.filter((tool) => tool.requires_approval).length;
 
-const workloads: Workload[] = [
-  {
-    name: "redis-cache",
-    kind: "Redis",
-    namespace: "default",
-    health: "Healthy",
-    saturation: 41,
-    risk: "Low",
-    tone: "ready",
-  },
-  {
-    name: "kafka-brokers",
-    kind: "Kafka",
-    namespace: "streaming",
-    health: "Degraded",
-    saturation: 73,
-    risk: "High",
-    tone: "warn",
-  },
-  {
-    name: "postgres-primary",
-    kind: "PostgreSQL",
-    namespace: "data",
-    health: "Watch",
-    saturation: 62,
-    risk: "Medium",
-    tone: "neutral",
-  },
-];
-
-const tools: ToolCapability[] = [
-  {
-    name: "inspect_workload",
-    risk: "Low",
-    approval: "No",
-  },
-  {
-    name: "restart_middleware",
-    risk: "High",
-    approval: "Required",
-  },
-  {
-    name: "scale_replicas",
-    risk: "Medium",
-    approval: "Required",
-  },
-  {
-    name: "read_events",
-    risk: "Low",
-    approval: "No",
-  },
-];
-
-const approvals = [
-  {
-    action: "Restart kafka-brokers",
-    target: "streaming/kafka-brokers",
-    age: "12m",
-  },
-  {
-    action: "Fail over redis-cache",
-    target: "default/redis-cache",
-    age: "31m",
-  },
-];
-
-export function MiddlewareDashboard() {
   return (
     <aside
       className="workspace-panel dashboard-panel"
@@ -127,31 +40,41 @@ export function MiddlewareDashboard() {
           <p className="section-kicker">Middleware dashboard</p>
           <h2 id="dashboard-title">Health, risk, and tool readiness</h2>
         </div>
-        <span className="badge badge-outline">staging</span>
+        <span className="badge badge-outline">
+          {plugins.length} plugin{plugins.length === 1 ? "" : "s"}
+        </span>
       </div>
 
       <section className="metric-grid" aria-label="Middleware metrics">
-        {metrics.map((metric) => (
-          <article className={`metric-tile ${metric.tone}`} key={metric.label}>
+        {middleware.metrics.map((metric) => (
+          <article className={`metric-tile ${metricTone(metric)}`} key={metric.id}>
             <span>{metric.label}</span>
             <strong>{metric.value}</strong>
             <p>{metric.detail}</p>
           </article>
         ))}
+        {middleware.metrics.length === 0 && (
+          <article className="metric-tile neutral">
+            <span>Workspace</span>
+            <strong>--</strong>
+            <p>Waiting for middleware snapshot</p>
+          </article>
+        )}
       </section>
 
       <section className="dashboard-section" aria-labelledby="workloads-title">
         <div className="section-row">
           <h3 id="workloads-title">Middleware fleet</h3>
-          <button className="button button-ghost" type="button">
-            Filter
-          </button>
+          <span className="subtle-count">{middleware.workloads.length}</span>
         </div>
         <div className="workload-list">
-          {workloads.map((workload) => (
-            <article className="workload-row" key={workload.name}>
+          {middleware.workloads.map((workload) => (
+            <article className="workload-row" key={workload.id}>
               <div className="workload-main">
-                <span className={`state-dot ${workload.tone}`} aria-hidden="true" />
+                <span
+                  className={`state-dot ${workloadTone(workload)}`}
+                  aria-hidden="true"
+                />
                 <div>
                   <strong>{workload.name}</strong>
                   <p>
@@ -160,7 +83,7 @@ export function MiddlewareDashboard() {
                 </div>
               </div>
               <div className="workload-health">
-                <span className={`badge badge-${workload.tone}`}>
+                <span className={`badge badge-${workloadTone(workload)}`}>
                   {workload.health}
                 </span>
                 <div
@@ -173,6 +96,9 @@ export function MiddlewareDashboard() {
               <span className="risk-label">{workload.risk}</span>
             </article>
           ))}
+          {middleware.workloads.length === 0 && (
+            <article className="empty-row">No workloads observed.</article>
+          )}
         </div>
       </section>
 
@@ -180,18 +106,23 @@ export function MiddlewareDashboard() {
         <section className="dashboard-section" aria-labelledby="tools-title">
           <div className="section-row">
             <h3 id="tools-title">Tool catalog</h3>
-            <span className="subtle-count">{tools.length}</span>
+            <span className="subtle-count">
+              {tools.length} / {gatedTools} gated
+            </span>
           </div>
           <div className="tool-stack">
             {tools.map((tool) => (
               <article className="tool-row" key={tool.name}>
                 <strong>{tool.name}</strong>
                 <div>
-                  <span>{tool.risk}</span>
-                  <span>{tool.approval}</span>
+                  <span>{tool.risk_level}</span>
+                  <span>{tool.requires_approval ? "Required" : "No approval"}</span>
                 </div>
               </article>
             ))}
+            {tools.length === 0 && (
+              <article className="empty-row">Waiting for tool catalog.</article>
+            )}
           </div>
         </section>
 
@@ -202,14 +133,19 @@ export function MiddlewareDashboard() {
           </div>
           <div className="approval-stack">
             {approvals.map((approval) => (
-              <article className="approval-row" key={approval.action}>
+              <article className="approval-row" key={approval.id}>
                 <div>
-                  <strong>{approval.action}</strong>
-                  <p>{approval.target}</p>
+                  <strong>{approval.tool_call.name}</strong>
+                  <p>
+                    {approval.risk_level} / {approval.status}
+                  </p>
                 </div>
-                <span>{approval.age}</span>
+                <span>{approval.requested_at}</span>
               </article>
             ))}
+            {approvals.length === 0 && (
+              <article className="empty-row">No approval records.</article>
+            )}
           </div>
         </section>
       </div>

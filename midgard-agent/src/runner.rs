@@ -1,11 +1,12 @@
 use std::sync::Arc;
 
+use futures_util::StreamExt;
 use midgard_core::MidgardResult;
 use midgard_tools::{ToolRegistry, ToolResult};
 
 use crate::{
     AgentMessage, AgentRunEvent, AgentRunStatus, AgentSession, AgentToolCall, LlmProvider,
-    LlmRequest, PendingApproval,
+    LlmRequest, LlmResponse, LlmStreamEvent, PendingApproval,
 };
 
 const DEFAULT_MAX_ITERATIONS: usize = 8;
@@ -62,13 +63,24 @@ impl AgentRunner {
         }
     }
 
-    pub async fn run(&self, mut session: AgentSession) -> MidgardResult<AgentRunResult> {
+    pub async fn run(&self, session: AgentSession) -> MidgardResult<AgentRunResult> {
+        self.run_with_observer(session, |_| {}).await
+    }
+
+    pub async fn run_with_observer<F>(
+        &self,
+        mut session: AgentSession,
+        mut observer: F,
+    ) -> MidgardResult<AgentRunResult>
+    where
+        F: FnMut(AgentRunEvent) + Send,
+    {
         let mut events = Vec::new();
         session.status = AgentRunStatus::Running;
         session.last_error = None;
 
         if self
-            .resume_pending_approval(&mut session, &mut events)
+            .resume_pending_approval(&mut session, &mut events, &mut observer)
             .await?
         {
             return Ok(AgentRunResult { session, events });
@@ -80,40 +92,109 @@ impl AgentRunner {
                 self.messages_for_provider(&session),
                 self.tools.definitions(),
             );
-            let response = match self.provider.complete(request).await {
-                Ok(response) => response,
-                Err(err) => {
-                    let error = err.to_string();
-                    session.status = AgentRunStatus::Failed;
-                    session.last_error = Some(error.clone());
-                    events.push(AgentRunEvent::Failed { error });
-                    return Ok(AgentRunResult { session, events });
+            let mut stream = self.provider.stream(request);
+            let mut content = String::new();
+            let mut streamed_tool_calls = Vec::new();
+            let mut response = None;
+
+            while let Some(event) = stream.next().await {
+                match event {
+                    Ok(LlmStreamEvent::ContentDelta(delta)) => {
+                        content.push_str(&delta);
+                        Self::emit_event(
+                            &mut events,
+                            &mut observer,
+                            AgentRunEvent::ModelDelta { content: delta },
+                        );
+                    }
+                    Ok(LlmStreamEvent::ToolCallDone(tool_call)) => {
+                        if !streamed_tool_calls
+                            .iter()
+                            .any(|existing: &AgentToolCall| existing.id == tool_call.id)
+                        {
+                            Self::emit_event(
+                                &mut events,
+                                &mut observer,
+                                AgentRunEvent::ToolCallRequested {
+                                    tool_call: tool_call.clone(),
+                                },
+                            );
+                            streamed_tool_calls.push(tool_call);
+                        }
+                    }
+                    Ok(LlmStreamEvent::MessageDone(done)) => {
+                        response = Some(done);
+                    }
+                    Err(err) => {
+                        let error = err.to_string();
+                        session.status = AgentRunStatus::Failed;
+                        session.last_error = Some(error.clone());
+                        Self::emit_event(
+                            &mut events,
+                            &mut observer,
+                            AgentRunEvent::Failed { error },
+                        );
+                        return Ok(AgentRunResult { session, events });
+                    }
                 }
-            };
+            }
+
+            let mut response = response.unwrap_or_else(|| {
+                LlmResponse::with_tool_calls(content, streamed_tool_calls.clone())
+            });
+            if response.tool_calls.is_empty() {
+                response.tool_calls = streamed_tool_calls;
+            }
+
+            for tool_call in &response.tool_calls {
+                if !events.iter().any(|event| {
+                    matches!(
+                        event,
+                        AgentRunEvent::ToolCallRequested { tool_call: emitted }
+                            if emitted.id == tool_call.id
+                    )
+                }) {
+                    Self::emit_event(
+                        &mut events,
+                        &mut observer,
+                        AgentRunEvent::ToolCallRequested {
+                            tool_call: tool_call.clone(),
+                        },
+                    );
+                }
+            }
 
             let assistant_message = AgentMessage::assistant_with_tool_calls(
                 response.content.clone(),
                 response.tool_calls.clone(),
             );
             session.messages.push(assistant_message.clone());
-            events.push(AgentRunEvent::AssistantMessage {
-                message: assistant_message,
-            });
+            Self::emit_event(
+                &mut events,
+                &mut observer,
+                AgentRunEvent::AssistantMessage {
+                    message: assistant_message,
+                },
+            );
             session.iteration_count += 1;
             run_iterations += 1;
 
             if response.tool_calls.is_empty() {
                 session.status = AgentRunStatus::Responded;
-                events.push(AgentRunEvent::Completed {
-                    status: session.status.clone(),
-                    output: response.content,
-                });
+                Self::emit_event(
+                    &mut events,
+                    &mut observer,
+                    AgentRunEvent::Completed {
+                        status: session.status.clone(),
+                        output: response.content,
+                    },
+                );
                 return Ok(AgentRunResult { session, events });
             }
 
             for tool_call in response.tool_calls {
                 if self
-                    .handle_tool_call(&mut session, &mut events, tool_call)
+                    .handle_tool_call(&mut session, &mut events, &mut observer, tool_call, false)
                     .await?
                 {
                     return Ok(AgentRunResult { session, events });
@@ -122,12 +203,24 @@ impl AgentRunner {
         }
 
         session.status = AgentRunStatus::MaxIterations;
-        events.push(AgentRunEvent::Completed {
-            status: AgentRunStatus::MaxIterations,
-            output: "agent reached max iterations".to_string(),
-        });
+        Self::emit_event(
+            &mut events,
+            &mut observer,
+            AgentRunEvent::Completed {
+                status: AgentRunStatus::MaxIterations,
+                output: "agent reached max iterations".to_string(),
+            },
+        );
 
         Ok(AgentRunResult { session, events })
+    }
+
+    fn emit_event<F>(events: &mut Vec<AgentRunEvent>, observer: &mut F, event: AgentRunEvent)
+    where
+        F: FnMut(AgentRunEvent),
+    {
+        observer(event.clone());
+        events.push(event);
     }
 
     fn messages_for_provider(&self, session: &AgentSession) -> Vec<AgentMessage> {
@@ -137,11 +230,15 @@ impl AgentRunner {
         messages
     }
 
-    async fn resume_pending_approval(
+    async fn resume_pending_approval<F>(
         &self,
         session: &mut AgentSession,
         events: &mut Vec<AgentRunEvent>,
-    ) -> MidgardResult<bool> {
+        observer: &mut F,
+    ) -> MidgardResult<bool>
+    where
+        F: FnMut(AgentRunEvent),
+    {
         let Some(approval) = session.pending_approval.clone() else {
             return Ok(false);
         };
@@ -149,7 +246,11 @@ impl AgentRunner {
         match approval.approved {
             None => {
                 session.status = AgentRunStatus::AwaitingApproval;
-                events.push(AgentRunEvent::ApprovalRequired { approval });
+                Self::emit_event(
+                    events,
+                    observer,
+                    AgentRunEvent::ApprovalRequired { approval },
+                );
                 Ok(true)
             }
             Some(false) => {
@@ -160,6 +261,7 @@ impl AgentRunner {
                 self.record_tool_result(
                     session,
                     events,
+                    observer,
                     &approval.tool_call,
                     result,
                     AgentRunStatus::Running,
@@ -173,6 +275,7 @@ impl AgentRunner {
                 self.record_tool_result(
                     session,
                     events,
+                    observer,
                     &approval.tool_call,
                     result.clone(),
                     if should_stop {
@@ -187,19 +290,37 @@ impl AgentRunner {
         }
     }
 
-    async fn handle_tool_call(
+    async fn handle_tool_call<F>(
         &self,
         session: &mut AgentSession,
         events: &mut Vec<AgentRunEvent>,
+        observer: &mut F,
         tool_call: AgentToolCall,
-    ) -> MidgardResult<bool> {
-        events.push(AgentRunEvent::ToolCallRequested {
-            tool_call: tool_call.clone(),
-        });
+        emit_requested: bool,
+    ) -> MidgardResult<bool>
+    where
+        F: FnMut(AgentRunEvent),
+    {
+        if emit_requested {
+            Self::emit_event(
+                events,
+                observer,
+                AgentRunEvent::ToolCallRequested {
+                    tool_call: tool_call.clone(),
+                },
+            );
+        }
 
         let Some(definition) = self.tools.definition(&tool_call.name) else {
             let result = ToolResult::error(format!("tool not found: {}", tool_call.name));
-            self.record_tool_result(session, events, &tool_call, result, AgentRunStatus::Running);
+            self.record_tool_result(
+                session,
+                events,
+                observer,
+                &tool_call,
+                result,
+                AgentRunStatus::Running,
+            );
             return Ok(false);
         };
 
@@ -207,7 +328,11 @@ impl AgentRunner {
             let approval = PendingApproval::new(tool_call, definition.risk_level);
             session.status = AgentRunStatus::AwaitingApproval;
             session.pending_approval = Some(approval.clone());
-            events.push(AgentRunEvent::ApprovalRequired { approval });
+            Self::emit_event(
+                events,
+                observer,
+                AgentRunEvent::ApprovalRequired { approval },
+            );
             return Ok(true);
         }
 
@@ -216,6 +341,7 @@ impl AgentRunner {
         self.record_tool_result(
             session,
             events,
+            observer,
             &tool_call,
             result,
             if should_stop {
@@ -246,14 +372,17 @@ impl AgentRunner {
         }
     }
 
-    fn record_tool_result(
+    fn record_tool_result<F>(
         &self,
         session: &mut AgentSession,
         events: &mut Vec<AgentRunEvent>,
+        observer: &mut F,
         tool_call: &AgentToolCall,
         result: ToolResult,
         next_status: AgentRunStatus,
-    ) {
+    ) where
+        F: FnMut(AgentRunEvent),
+    {
         session.messages.push(AgentMessage::tool_result(
             tool_call.id.clone(),
             result.output.clone(),
@@ -262,17 +391,25 @@ impl AgentRunner {
         if result.is_error {
             session.last_error = Some(result.output.clone());
         }
-        events.push(AgentRunEvent::ToolResult {
-            tool_call_id: tool_call.id.clone(),
-            name: tool_call.name.clone(),
-            result: result.clone(),
-        });
+        Self::emit_event(
+            events,
+            observer,
+            AgentRunEvent::ToolResult {
+                tool_call_id: tool_call.id.clone(),
+                name: tool_call.name.clone(),
+                result: result.clone(),
+            },
+        );
 
         if !result.should_continue {
-            events.push(AgentRunEvent::Completed {
-                status: next_status,
-                output: result.output,
-            });
+            Self::emit_event(
+                events,
+                observer,
+                AgentRunEvent::Completed {
+                    status: next_status,
+                    output: result.output,
+                },
+            );
         }
     }
 }
