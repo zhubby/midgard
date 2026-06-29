@@ -1,5 +1,5 @@
 [package]
-name = "midgard-controller"
+name = "midgard-k8s"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -7,8 +7,7 @@ version.workspace = true
 
 [dependencies]
 async-trait.workspace = true
-midgard-core = { path = "../midgard-core" }
-midgard-tools = { path = "../midgard-tools" }
+midgard-core.workspace = true
 serde.workspace = true
 
 [dev-dependencies]

@@ -4,7 +4,7 @@ Midgard is an agent-native middleware operations platform for Kubernetes. It use
 
 ## Architecture
 
-- Rust backend organized as a multi-crate workspace under `crates/midgard-*`.
+- Rust backend organized as root-level `midgard-*` crates.
 - OpenAI-compatible ReAct agent runtime with explicit completion signaling.
 - Pluggable middleware controllers that register capabilities as tools.
 - Kubernetes abstraction layer for cluster, namespace, workload, pod, and event operations.
@@ -13,14 +13,13 @@ Midgard is an agent-native middleware operations platform for Kubernetes. It use
 ## Workspace
 
 ```text
-crates/
-  midgard-core              Shared domain types and configuration
-  midgard-agent             Agent loop and OpenAI-compatible provider
-  midgard-tools             Tool trait, registry, and execution results
-  midgard-controller        Middleware controller plugin contracts
-  midgard-k8s               Kubernetes operations abstraction
-  midgard-plugin-example    Example middleware plugin
-  midgard-server            Axum HTTP API
+midgard-core                Shared domain types and configuration
+midgard-agent               Agent loop and OpenAI-compatible provider
+midgard-tools               Tool trait, registry, and execution results
+midgard-controller          Middleware controller plugin contracts
+midgard-k8s                 Kubernetes operations abstraction
+midgard-plugin-example      Example middleware plugin
+midgard-server              Axum HTTP API
 midgard-ui/                 Bun + Next.js UI
 spec.md                     Project design specification
 ```
