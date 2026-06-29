@@ -14,7 +14,7 @@ This repository is a Rust workspace with a Bun + Next.js frontend. The current c
 - `midgard-plugin-example`: example Redis middleware plugin and controller tool registration.
 - `midgard-server`: Axum HTTP API library and app state wiring.
 - `midgard-cli`: Clap-based project entrypoint, config init command, server startup, and Toasty migration wrapper.
-- `midgard-ui`: Bun + TypeScript + Next.js frontend.
+- `midgard-web`: Bun + TypeScript + Next.js frontend.
 
 Keep new code in the crate that owns the domain concern. Avoid leaking HTTP/UI concerns into runtime/domain crates, and avoid putting middleware-specific behavior into generic controller, tool, or Kubernetes abstractions.
 
@@ -45,10 +45,10 @@ Use workspace-level Cargo commands from the repository root:
 
 Frontend commands:
 
-- `cd midgard-ui && bun install`: install frontend dependencies.
-- `cd midgard-ui && bun run dev`: run the Next.js development server.
-- `cd midgard-ui && bun run build`: build the frontend.
-- `cd midgard-ui && bun run lint`: run TypeScript checking (`tsc --noEmit`).
+- `cd midgard-web && bun install`: install frontend dependencies.
+- `cd midgard-web && bun run dev`: run the Next.js development server.
+- `cd midgard-web && bun run build`: build the frontend.
+- `cd midgard-web && bun run lint`: run TypeScript checking (`tsc --noEmit`).
 
 ## Rust Style and Idioms
 
@@ -100,7 +100,7 @@ When adding middleware plugins:
 
 ## Frontend Guidelines
 
-The UI lives in `midgard-ui` and uses the Next.js App Router under `app/`.
+The UI lives in `midgard-web` and uses the Next.js App Router under `app/`.
 
 - Use TypeScript strict mode and keep `bun run lint` passing.
 - Keep operational screens dense, readable, and task-focused. This is an operations console, not a marketing landing page.

@@ -10,7 +10,7 @@ Midgard is an agent-native middleware operations platform for Kubernetes. It use
 - Toasty-backed storage layer targeting PostgreSQL.
 - Pluggable middleware controllers that register capabilities as tools.
 - Kubernetes abstraction layer for cluster, namespace, workload, pod, and event operations.
-- Bun + TypeScript + Next.js frontend in `midgard-ui`.
+- Bun + TypeScript + Next.js frontend in `midgard-web`.
 
 ## Workspace
 
@@ -25,7 +25,7 @@ midgard-k8s                 Kubernetes operations abstraction
 midgard-plugin-example      Example middleware plugin
 midgard-server              Axum HTTP API library
 midgard-cli                 Clap CLI entrypoint and migration wrapper
-midgard-ui/                 Bun + Next.js UI
+midgard-web/                 Bun + Next.js UI
 midgard-storage/toasty/     Toasty migration history, migrations, and snapshots
 ```
 
@@ -41,7 +41,7 @@ cargo run -p midgard-cli -- migrate apply
 Frontend:
 
 ```bash
-cd midgard-ui
+cd midgard-web
 bun install
 bun run dev
 ```
