@@ -13,10 +13,13 @@ import type {
   AgentRunStatus,
   AgentSession,
   ApprovalRecord,
+  AuthUser,
   MiddlewareDashboardState,
+  OrganizationContext,
   PendingApproval,
   PluginResponse,
   ToolDefinition,
+  Workspace,
   WorkspaceEvent,
 } from "@/lib/types";
 
@@ -301,21 +304,39 @@ function reduceWorkspaceEvent(
   }
 }
 
-export function WorkspaceShell() {
+interface WorkspaceShellProps {
+  busyAuth: boolean;
+  context: OrganizationContext;
+  workspace: Workspace;
+  user: AuthUser;
+  onLogout: () => void;
+}
+
+export function WorkspaceShell({
+  busyAuth,
+  context,
+  workspace,
+  user,
+  onLogout,
+}: WorkspaceShellProps) {
   const [state, dispatch] = useReducer(reduceWorkspace, initialState);
   const [draft, setDraft] = useState(
     "Inspect Redis in the default namespace and report whether it is healthy.",
   );
+  const orgSlug = context.organization.slug;
+  const workspaceSlug = workspace.slug;
 
   useEffect(() => {
     const connection = connectWorkspaceEvents({
+      orgSlug,
+      workspaceSlug,
       onEvent: (event) => dispatch({ type: "event", event }),
       onStatus: (status) => dispatch({ type: "connection", status }),
       onError: (message) => dispatch({ type: "error", message }),
     });
 
     return () => connection.close();
-  }, []);
+  }, [orgSlug, workspaceSlug]);
 
   async function handleSend(prompt: string) {
     const message = prompt.trim();
@@ -326,10 +347,10 @@ export function WorkspaceShell() {
 
     try {
       const session = state.session
-        ? await sendMessage(state.session.id, message)
-        : await createSession(message);
+        ? await sendMessage(orgSlug, workspaceSlug, state.session.id, message)
+        : await createSession(orgSlug, workspaceSlug, message);
       dispatch({ type: "session_loaded", session });
-      await runAgent(session.id);
+      await runAgent(orgSlug, workspaceSlug, session.id);
       setDraft("");
     } catch (error) {
       dispatch({
@@ -349,9 +370,10 @@ export function WorkspaceShell() {
 
     try {
       const response = await decideApproval(
+        orgSlug,
+        workspaceSlug,
         state.session.id,
         decision,
-        "operator@midgard.local",
         decision === "approve" ? "Approved from Midgard console" : undefined,
         true,
       );
@@ -375,7 +397,10 @@ export function WorkspaceShell() {
           </div>
           <div>
             <p className="section-kicker">Midgard</p>
-            <h1>Agent-native middleware operations</h1>
+            <h1>{workspace.name}</h1>
+            <p className="workspace-breadcrumb">
+              {context.organization.name} / {workspace.slug}
+            </p>
           </div>
         </div>
 
@@ -384,6 +409,18 @@ export function WorkspaceShell() {
             <span aria-hidden="true" />
             {state.connectionStatus}
           </span>
+          <div className="user-chip" aria-label="Signed in user">
+            <strong>{user.display_name || user.email}</strong>
+            <span>{user.role}</span>
+          </div>
+          <button
+            className="button button-outline logout-button"
+            disabled={busyAuth}
+            type="button"
+            onClick={onLogout}
+          >
+            Logout
+          </button>
         </div>
       </header>
 

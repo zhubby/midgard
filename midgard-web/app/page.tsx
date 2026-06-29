@@ -1,5 +1,5 @@
-import { WorkspaceShell } from "@/components/WorkspaceShell";
+import { HomePageClient } from "@/components/HomePageClient";
 
 export default function Home() {
-  return <WorkspaceShell />;
+  return <HomePageClient />;
 }

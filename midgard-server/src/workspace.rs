@@ -8,6 +8,7 @@ use midgard_agent::{
     AgentMessage, AgentRunEvent, AgentRunStatus, AgentSession, AgentToolCall, ApprovalRecord,
     PendingApproval,
 };
+use midgard_storage::{Organization, OrganizationMembership, Workspace};
 use midgard_tools::{ToolDefinition, ToolResult};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
@@ -21,6 +22,9 @@ const EVENT_BUFFER_SIZE: usize = 256;
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
 pub struct WorkspaceSnapshot {
+    pub organization: Organization,
+    pub workspace: Workspace,
+    pub current_membership: OrganizationMembership,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<AgentSession>,
     pub tools: Vec<ToolDefinition>,
@@ -211,14 +215,14 @@ impl WorkspaceEventType {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum WorkspaceEventPayload {
     Connected {
-        snapshot: WorkspaceSnapshot,
+        snapshot: Box<WorkspaceSnapshot>,
     },
     Heartbeat,
     Error {
         message: String,
     },
     AgentSessionUpdated {
-        session: AgentSession,
+        session: Box<AgentSession>,
     },
     AgentRunStarted {
         run_id: String,
@@ -257,7 +261,7 @@ pub enum WorkspaceEventPayload {
     },
     ApprovalDecided {
         approval_record: ApprovalRecord,
-        session: AgentSession,
+        session: Box<AgentSession>,
     },
     MiddlewareSnapshot {
         state: MiddlewareDashboardState,
@@ -385,14 +389,33 @@ impl WorkspaceEventBus {
     }
 
     pub fn publish(&self, payload: WorkspaceEventPayload) -> WorkspaceEvent {
-        let event = self.next_event(payload);
+        let event = self.next_event(None, payload);
         self.remember(event.clone());
         let _ = self.sender.send(event.clone());
         event
     }
 
     pub fn local_event(&self, payload: WorkspaceEventPayload) -> WorkspaceEvent {
-        self.next_event(payload)
+        self.next_event(None, payload)
+    }
+
+    pub fn publish_for_workspace(
+        &self,
+        workspace_id: impl Into<String>,
+        payload: WorkspaceEventPayload,
+    ) -> WorkspaceEvent {
+        let event = self.next_event(Some(workspace_id.into()), payload);
+        self.remember(event.clone());
+        let _ = self.sender.send(event.clone());
+        event
+    }
+
+    pub fn local_event_for_workspace(
+        &self,
+        workspace_id: impl Into<String>,
+        payload: WorkspaceEventPayload,
+    ) -> WorkspaceEvent {
+        self.next_event(Some(workspace_id.into()), payload)
     }
 
     pub fn replay_after(&self, event_id: u64) -> Option<Vec<WorkspaceEvent>> {
@@ -416,7 +439,24 @@ impl WorkspaceEventBus {
         )
     }
 
-    fn next_event(&self, payload: WorkspaceEventPayload) -> WorkspaceEvent {
+    pub fn replay_after_for_workspace(
+        &self,
+        event_id: u64,
+        workspace_id: &str,
+    ) -> Option<Vec<WorkspaceEvent>> {
+        self.replay_after(event_id).map(|events| {
+            events
+                .into_iter()
+                .filter(|event| event.workspace_id.as_deref() == Some(workspace_id))
+                .collect()
+        })
+    }
+
+    fn next_event(
+        &self,
+        workspace_id: Option<String>,
+        payload: WorkspaceEventPayload,
+    ) -> WorkspaceEvent {
         let mut inner = self.inner.lock().expect("workspace event bus poisoned");
         let event_id = inner.next_event_id;
         inner.next_event_id += 1;
@@ -425,7 +465,7 @@ impl WorkspaceEventBus {
             event_id,
             protocol_version: WORKSPACE_PROTOCOL_VERSION,
             occurred_at: utc_now_rfc3339(),
-            workspace_id: None,
+            workspace_id,
             event_type: payload.event_type(),
             payload,
         }

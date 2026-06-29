@@ -21,9 +21,11 @@ version = "0.1.0"
 
 [workspace.dependencies]
 anyhow = "1"
+argon2 = "0.5"
 async-stream = "0.3"
 async-trait = "0.1"
 axum = "0.8"
+base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.6", features = ["derive"] }
 dirs = "6"
@@ -37,10 +39,12 @@ midgard-plugin-example = { path = "midgard-plugin-example" }
 midgard-server = { path = "midgard-server" }
 midgard-tools = { path = "midgard-tools" }
 midgard-storage = { path = "midgard-storage" }
+rand = "0.8"
 reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"], default-features = false }
 schemars = { version = "0.8", features = ["chrono"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 tempfile = "3"
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }

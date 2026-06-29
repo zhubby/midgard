@@ -35,23 +35,30 @@ export interface WorkspaceEventConnection {
 }
 
 export function connectWorkspaceEvents({
+  orgSlug,
+  workspaceSlug,
   sessionId,
   onEvent,
   onStatus,
   onError,
 }: {
+  orgSlug: string;
+  workspaceSlug: string;
   sessionId?: string | null;
   onEvent: (event: WorkspaceEvent) => void;
   onStatus?: (status: WorkspaceConnectionStatus) => void;
   onError?: (message: string) => void;
 }): WorkspaceEventConnection {
-  const url = new URL("/api/workspace/events", API_BASE);
+  const url = new URL(
+    `/api/orgs/${orgSlug}/workspaces/${workspaceSlug}/events`,
+    API_BASE,
+  );
   if (sessionId) {
     url.searchParams.set("session_id", sessionId);
   }
 
   onStatus?.("connecting");
-  const source = new EventSource(url);
+  const source = new EventSource(url, { withCredentials: true });
 
   source.onopen = () => onStatus?.("connected");
   source.onerror = () => {
