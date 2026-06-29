@@ -44,6 +44,20 @@ export interface PendingApproval {
   approved?: boolean;
 }
 
+export type ApprovalStatus = "pending" | "approved" | "rejected";
+
+export interface ApprovalRecord {
+  id: string;
+  session_id: string;
+  tool_call: AgentToolCall;
+  risk_level: RiskLevel;
+  status: ApprovalStatus;
+  requested_at: string;
+  decided_at?: string;
+  actor?: string;
+  reason?: string;
+}
+
 export interface AgentSession {
   id: string;
   messages: AgentMessage[];
@@ -66,6 +80,6 @@ export interface AgentRunResponse {
 }
 
 export interface ApprovalResponse {
-  approval: PendingApproval;
+  approval_record: ApprovalRecord;
   session: AgentSession;
 }

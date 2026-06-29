@@ -8,6 +8,7 @@ version.workspace = true
 [dependencies]
 async-stream.workspace = true
 async-trait.workspace = true
+chrono.workspace = true
 futures-util.workspace = true
 midgard-core.workspace = true
 midgard-tools.workspace = true

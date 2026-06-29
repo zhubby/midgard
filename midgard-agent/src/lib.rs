@@ -7,7 +7,7 @@ mod runner;
 pub use completion::CompleteTaskTool;
 pub use model::{
     AgentMessage, AgentRole, AgentRunEvent, AgentRunStatus, AgentSession, AgentToolCall,
-    ApprovalDecision, PendingApproval,
+    ApprovalDecision, ApprovalRecord, ApprovalStatus, PendingApproval,
 };
 pub use openai::{
     parse_chat_completion_response, parse_chat_stream_events, parse_responses_response,

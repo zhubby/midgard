@@ -4,8 +4,9 @@ use async_trait::async_trait;
 use midgard_agent::{
     parse_chat_completion_response, parse_chat_stream_events, parse_responses_response,
     parse_responses_stream_events, AgentMessage, AgentRole, AgentRunStatus, AgentRunner,
-    AgentSession, AgentToolCall, ApprovalDecision, CompleteTaskTool, LlmRequest, LlmResponse,
-    LlmStreamEvent, OpenAiCompatibleProvider, ScriptedLlmProvider,
+    AgentSession, AgentToolCall, ApprovalDecision, ApprovalRecord, ApprovalStatus,
+    CompleteTaskTool, LlmRequest, LlmResponse, LlmStreamEvent, OpenAiCompatibleProvider,
+    PendingApproval, ScriptedLlmProvider,
 };
 use midgard_core::{CompletionStatus, LlmApiMode, LlmConfig, RiskLevel};
 use midgard_tools::{Tool, ToolDefinition, ToolRegistry, ToolResult};
@@ -61,6 +62,48 @@ fn agent_message_preserves_assistant_tool_trace_text() {
 #[test]
 fn completion_status_is_available_to_agent_contract() {
     assert_eq!(CompletionStatus::Blocked.as_str(), "blocked");
+}
+
+#[test]
+fn approval_record_serializes_pending_status() {
+    let session = AgentSession::new("restart redis");
+    let pending = PendingApproval::new(
+        AgentToolCall::from_raw(
+            "call_1",
+            "restart_redis",
+            r#"{"namespace":"default","name":"cache"}"#,
+        ),
+        RiskLevel::High,
+    );
+
+    let record = ApprovalRecord::pending(session.id, &pending);
+    let json = serde_json::to_value(&record).unwrap();
+
+    assert_eq!(record.status, ApprovalStatus::Pending);
+    assert_eq!(ApprovalStatus::Pending.as_str(), "pending");
+    assert_eq!(json["status"], "pending");
+    assert!(json.get("actor").is_none());
+}
+
+#[test]
+fn approval_record_decision_sets_actor_reason_and_timestamp() {
+    let session = AgentSession::new("restart redis");
+    let pending = PendingApproval::new(
+        AgentToolCall::from_raw("call_1", "restart_redis", "{}"),
+        RiskLevel::High,
+    );
+    let mut record = ApprovalRecord::pending(session.id, &pending);
+
+    record.record_decision(
+        ApprovalDecision::Approve,
+        "operator@example.com",
+        Some("maintenance window".to_string()),
+    );
+
+    assert_eq!(record.status, ApprovalStatus::Approved);
+    assert_eq!(record.actor.as_deref(), Some("operator@example.com"));
+    assert_eq!(record.reason.as_deref(), Some("maintenance window"));
+    assert!(record.decided_at.is_some());
 }
 
 #[test]

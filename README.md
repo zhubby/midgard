@@ -9,6 +9,7 @@ Midgard is an agent-native middleware operations platform for Kubernetes. It use
 - TOML-backed project configuration loaded from `~/.midgard/config.toml`.
 - Toasty-backed storage layer targeting PostgreSQL.
 - Pluggable middleware controllers that register capabilities as tools.
+- Persistent approval audit history for high-risk and critical tool calls.
 - Kubernetes abstraction layer for cluster, namespace, workload, pod, and event operations.
 - Bun + TypeScript + Next.js frontend in `midgard-web`.
 

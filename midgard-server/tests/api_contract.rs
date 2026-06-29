@@ -261,7 +261,23 @@ async fn approval_endpoint_records_decision_and_next_run_resumes() {
     let json: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["status"], "awaiting_approval");
 
-    let approval = app
+    let history = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/agent/sessions/{id}/approvals"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = to_bytes(history.into_body(), usize::MAX).await.unwrap();
+    let history: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(history.as_array().unwrap().len(), 1);
+    assert_eq!(history[0]["status"], "pending");
+    assert_eq!(history[0]["tool_call"]["name"], "redis_restart");
+
+    let missing_actor = app
         .clone()
         .oneshot(
             Request::builder()
@@ -269,6 +285,22 @@ async fn approval_endpoint_records_decision_and_next_run_resumes() {
                 .uri(format!("/api/agent/sessions/{id}/approvals"))
                 .header("content-type", "application/json")
                 .body(Body::from(r#"{"decision":"approve"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(missing_actor.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let approval = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/agent/sessions/{id}/approvals"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"decision":"approve","actor":"operator@example.com","reason":"maintenance window"}"#,
+                ))
                 .unwrap(),
         )
         .await
@@ -281,8 +313,19 @@ async fn approval_endpoint_records_decision_and_next_run_resumes() {
         "{}",
         String::from_utf8_lossy(&approval_body)
     );
+    let approval_json: Value = serde_json::from_slice(&approval_body).unwrap();
+    assert_eq!(approval_json["approval_record"]["status"], "approved");
+    assert_eq!(
+        approval_json["approval_record"]["actor"],
+        "operator@example.com"
+    );
+    assert_eq!(
+        approval_json["approval_record"]["reason"],
+        "maintenance window"
+    );
 
     let second = app
+        .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -304,4 +347,19 @@ async fn approval_endpoint_records_decision_and_next_run_resumes() {
             .as_str()
             .unwrap_or_default()
             .contains("Restart requested")));
+
+    let history = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/agent/sessions/{id}/approvals"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = to_bytes(history.into_body(), usize::MAX).await.unwrap();
+    let history: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(history.as_array().unwrap().len(), 1);
+    assert_eq!(history[0]["status"], "approved");
+    assert_eq!(history[0]["actor"], "operator@example.com");
 }

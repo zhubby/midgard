@@ -1,4 +1,5 @@
 import type {
+  ApprovalRecord,
   AgentRunResponse,
   AgentSession,
   ApprovalResponse,
@@ -55,10 +56,16 @@ export function runAgent(sessionId: string): Promise<AgentRunResponse> {
 export function decideApproval(
   sessionId: string,
   decision: "approve" | "reject",
+  actor: string,
+  reason?: string,
 ): Promise<ApprovalResponse> {
   return request<ApprovalResponse>(`/api/agent/sessions/${sessionId}/approvals`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ decision }),
+    body: JSON.stringify({ decision, actor, reason }),
   });
+}
+
+export function fetchApprovals(sessionId: string): Promise<ApprovalRecord[]> {
+  return request<ApprovalRecord[]>(`/api/agent/sessions/${sessionId}/approvals`);
 }

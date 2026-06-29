@@ -1,3 +1,4 @@
+use chrono::{SecondsFormat, Utc};
 use midgard_core::{MidgardError, MidgardResult, RiskLevel};
 use midgard_tools::ToolResult;
 use serde::{Deserialize, Serialize};
@@ -145,6 +146,79 @@ impl ApprovalDecision {
     pub fn approved(&self) -> bool {
         matches!(self, ApprovalDecision::Approve)
     }
+
+    pub fn status(&self) -> ApprovalStatus {
+        match self {
+            ApprovalDecision::Approve => ApprovalStatus::Approved,
+            ApprovalDecision::Reject => ApprovalStatus::Rejected,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalStatus {
+    Pending,
+    Approved,
+    Rejected,
+}
+
+impl ApprovalStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ApprovalStatus::Pending => "pending",
+            ApprovalStatus::Approved => "approved",
+            ApprovalStatus::Rejected => "rejected",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct ApprovalRecord {
+    pub id: Uuid,
+    pub session_id: Uuid,
+    pub tool_call: AgentToolCall,
+    pub risk_level: RiskLevel,
+    pub status: ApprovalStatus,
+    pub requested_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decided_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+impl ApprovalRecord {
+    pub fn pending(session_id: Uuid, approval: &PendingApproval) -> Self {
+        Self {
+            id: approval.id,
+            session_id,
+            tool_call: approval.tool_call.clone(),
+            risk_level: approval.risk_level.clone(),
+            status: ApprovalStatus::Pending,
+            requested_at: utc_now_rfc3339(),
+            decided_at: None,
+            actor: None,
+            reason: None,
+        }
+    }
+
+    pub fn record_decision(
+        &mut self,
+        decision: ApprovalDecision,
+        actor: impl Into<String>,
+        reason: Option<String>,
+    ) {
+        self.status = decision.status();
+        self.decided_at = Some(utc_now_rfc3339());
+        self.actor = Some(actor.into());
+        self.reason = reason;
+    }
+}
+
+fn utc_now_rfc3339() -> String {
+    Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true)
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]

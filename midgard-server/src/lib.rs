@@ -10,8 +10,8 @@ use axum::{
 };
 use http::{HeaderValue, Method};
 use midgard_agent::{
-    AgentRunEvent, AgentRunStatus, AgentRunner, AgentSession, ApprovalDecision, CompleteTaskTool,
-    LlmProvider, LlmResponse, PendingApproval, ScriptedLlmProvider,
+    AgentRunEvent, AgentRunStatus, AgentRunner, AgentSession, ApprovalDecision, ApprovalRecord,
+    CompleteTaskTool, LlmProvider, LlmResponse, PendingApproval, ScriptedLlmProvider,
 };
 use midgard_controller::{MiddlewareController, MiddlewarePlugin};
 use midgard_plugin_example::ExampleRedisPlugin;
@@ -72,7 +72,10 @@ pub fn app_with_provider(
         .route("/api/agent/sessions/{id}/messages", post(send_message))
         .route("/api/agent/sessions/{id}/runs", post(run_agent))
         .route("/api/agent/sessions/{id}/runs/stream", post(stream_agent))
-        .route("/api/agent/sessions/{id}/approvals", post(record_approval))
+        .route(
+            "/api/agent/sessions/{id}/approvals",
+            get(list_approval_records).post(record_approval),
+        )
         .layer(
             CorsLayer::new()
                 .allow_origin([
@@ -157,10 +160,36 @@ async fn record_approval(
     Json(request): Json<ApprovalRequest>,
 ) -> Result<Json<ApprovalResponse>, AppError> {
     let mut session = load_or_resumed_session(&state, id).await?;
-    let approval = session.record_approval_decision(request.decision)?;
+    let actor = validated_actor(request.actor)?;
+    let approval = session.record_approval_decision(request.decision.clone())?;
+    let approval_record = state
+        .sessions
+        .record_approval_decision(id, approval, request.decision, actor, request.reason)
+        .await?;
     let session = state.sessions.save_session(session).await?;
 
-    Ok(Json(ApprovalResponse { approval, session }))
+    Ok(Json(ApprovalResponse {
+        approval_record,
+        session,
+    }))
+}
+
+async fn list_approval_records(
+    Path(id): Path<Uuid>,
+    State(state): State<AppState>,
+) -> Result<Json<Vec<ApprovalRecord>>, AppError> {
+    Ok(Json(state.sessions.list_approval_records(id).await?))
+}
+
+fn validated_actor(actor: String) -> Result<String, AppError> {
+    let actor = actor.trim().to_string();
+    if actor.is_empty() {
+        return Err(AppError(midgard_core::MidgardError::Configuration(
+            "approval actor is required".to_string(),
+        )));
+    }
+
+    Ok(actor)
 }
 
 async fn load_or_resumed_session(state: &AppState, id: Uuid) -> Result<AgentSession, AppError> {
@@ -228,6 +257,8 @@ struct SendMessageRequest {
 #[derive(Debug, Deserialize)]
 struct ApprovalRequest {
     decision: ApprovalDecision,
+    actor: String,
+    reason: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -240,7 +271,7 @@ pub struct AgentRunResponse {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct ApprovalResponse {
-    pub approval: PendingApproval,
+    pub approval_record: ApprovalRecord,
     pub session: AgentSession,
 }
 
