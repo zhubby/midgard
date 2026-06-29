@@ -2,7 +2,7 @@ use midgard_k8s::{KubernetesClient, MockKubernetesClient};
 
 #[tokio::test]
 async fn mock_client_reports_cluster_health() {
-    let client = MockKubernetesClient::default();
+    let client = MockKubernetesClient;
 
     let health = client.cluster_health().await.unwrap();
 
@@ -12,7 +12,7 @@ async fn mock_client_reports_cluster_health() {
 
 #[tokio::test]
 async fn mock_client_lists_namespaces_and_workloads() {
-    let client = MockKubernetesClient::default();
+    let client = MockKubernetesClient;
 
     let namespaces = client.list_namespaces().await.unwrap();
     let workloads = client.list_workloads("default").await.unwrap();

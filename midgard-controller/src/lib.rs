@@ -60,4 +60,3 @@ pub trait MiddlewarePlugin {
     fn metadata(&self) -> PluginMetadata;
     fn controller(&self) -> Self::Controller;
 }
-

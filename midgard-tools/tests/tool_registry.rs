@@ -26,7 +26,10 @@ async fn registry_executes_registered_tools() {
     let mut registry = ToolRegistry::default();
     registry.register(EchoTool);
 
-    let result = registry.call("echo", json!({"message": "hello"})).await.unwrap();
+    let result = registry
+        .call("echo", json!({"message": "hello"}))
+        .await
+        .unwrap();
 
     assert!(result.success);
     assert!(result.should_continue);

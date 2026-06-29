@@ -1,0 +1,14 @@
+# Workspace-wide Clippy configuration.
+# Lint selection stays in Cargo/CI commands; this file keeps shared thresholds consistent.
+
+avoid-breaking-exported-api = true
+cognitive-complexity-threshold = 30
+enum-variant-size-threshold = 200
+large-error-threshold = 128
+pass-by-value-size-limit = 256
+single-char-binding-names-threshold = 4
+too-many-arguments-threshold = 7
+too-many-lines-threshold = 150
+trivial-copy-size-limit = 16
+type-complexity-threshold = 250
+vec-box-size-threshold = 4096

@@ -11,6 +11,7 @@ midgard-agent.workspace = true
 midgard-controller.workspace = true
 midgard-core.workspace = true
 midgard-plugin-example.workspace = true
+midgard-storage.workspace = true
 midgard-tools.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -119,4 +119,3 @@ impl Tool for CompleteTaskTool {
         ToolResult::complete(format!("{status}: {summary}"))
     }
 }
-

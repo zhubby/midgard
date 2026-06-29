@@ -84,4 +84,3 @@ impl KubernetesClient for MockKubernetesClient {
         }])
     }
 }
-

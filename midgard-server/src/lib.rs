@@ -1,28 +1,31 @@
 use axum::{
     extract::{Path, State},
+    http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
     Json, Router,
 };
-use midgard_agent::{AgentMessage, AgentSession, CompleteTaskTool};
+use midgard_agent::{AgentSession, CompleteTaskTool};
 use midgard_controller::{MiddlewareController, MiddlewarePlugin};
 use midgard_plugin_example::ExampleRedisPlugin;
+use midgard_storage::{MemoryAgentSessionStore, SharedAgentSessionStore};
 use midgard_tools::{ToolDefinition, ToolRegistry};
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::BTreeMap,
-    sync::{Arc, Mutex},
-};
+use std::sync::Arc;
 use uuid::Uuid;
 
 #[derive(Clone)]
 pub struct AppState {
     tools: Arc<ToolRegistry>,
     plugins: Arc<Vec<PluginResponse>>,
-    sessions: Arc<Mutex<BTreeMap<Uuid, AgentSession>>>,
+    sessions: SharedAgentSessionStore,
 }
 
 pub fn app() -> Router {
+    app_with_storage(Arc::new(MemoryAgentSessionStore::new()))
+}
+
+pub fn app_with_storage(sessions: SharedAgentSessionStore) -> Router {
     let mut registry = ToolRegistry::default();
     registry.register(CompleteTaskTool);
 
@@ -33,7 +36,7 @@ pub fn app() -> Router {
     let state = AppState {
         tools: Arc::new(registry),
         plugins: Arc::new(vec![PluginResponse::from(plugin.metadata())]),
-        sessions: Arc::new(Mutex::new(BTreeMap::new())),
+        sessions,
     };
 
     Router::new()
@@ -62,30 +65,23 @@ async fn list_plugins(State(state): State<AppState>) -> impl IntoResponse {
 async fn create_session(
     State(state): State<AppState>,
     Json(request): Json<CreateSessionRequest>,
-) -> impl IntoResponse {
-    let session = AgentSession::new(request.goal);
-    state
-        .sessions
-        .lock()
-        .expect("session store poisoned")
-        .insert(session.id, session.clone());
+) -> Result<Json<AgentSession>, AppError> {
+    let session = state.sessions.create_session(request.goal).await?;
 
-    Json(session)
+    Ok(Json(session))
 }
 
 async fn send_message(
     Path(id): Path<Uuid>,
     State(state): State<AppState>,
     Json(request): Json<SendMessageRequest>,
-) -> impl IntoResponse {
-    let mut sessions = state.sessions.lock().expect("session store poisoned");
-    let session = sessions
-        .entry(id)
-        .or_insert_with(|| AgentSession::new("resumed session"));
+) -> Result<Json<AgentSession>, AppError> {
+    let session = state
+        .sessions
+        .append_user_message(id, request.message)
+        .await?;
 
-    session.messages.push(AgentMessage::user(request.message));
-
-    Json(session.clone())
+    Ok(Json(session))
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -120,8 +116,38 @@ struct SendMessageRequest {
     message: String,
 }
 
+#[derive(Clone, Debug, Serialize)]
+struct ErrorResponse {
+    error: String,
+}
+
+#[derive(Debug)]
+struct AppError(midgard_core::MidgardError);
+
+impl From<midgard_core::MidgardError> for AppError {
+    fn from(value: midgard_core::MidgardError) -> Self {
+        Self(value)
+    }
+}
+
+impl IntoResponse for AppError {
+    fn into_response(self) -> axum::response::Response {
+        let status = match self.0 {
+            midgard_core::MidgardError::Configuration(_) => StatusCode::BAD_REQUEST,
+            _ => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+
+        (
+            status,
+            Json(ErrorResponse {
+                error: self.0.to_string(),
+            }),
+        )
+            .into_response()
+    }
+}
+
 #[allow(dead_code)]
 fn _tool_definitions_for_docs(registry: &ToolRegistry) -> Vec<ToolDefinition> {
     registry.definitions()
 }
-

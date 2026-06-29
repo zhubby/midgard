@@ -97,7 +97,9 @@ impl Tool for RedisRestartTool {
         let namespace = argument_string(&arguments, "namespace");
         let name = argument_string(&arguments, "name");
 
-        ToolResult::success(format!("Restart requested for Redis workload {namespace}/{name}"))
+        ToolResult::success(format!(
+            "Restart requested for Redis workload {namespace}/{name}"
+        ))
     }
 }
 
@@ -108,4 +110,3 @@ fn argument_string(arguments: &Value, key: &str) -> String {
         .unwrap_or("unknown")
         .to_string()
 }
-

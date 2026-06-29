@@ -1,5 +1,7 @@
 use async_trait::async_trait;
-use midgard_controller::{ControllerHealth, MiddlewareController, MiddlewarePlugin, PluginMetadata};
+use midgard_controller::{
+    ControllerHealth, MiddlewareController, MiddlewarePlugin, PluginMetadata,
+};
 use midgard_core::{CapabilityDescriptor, RiskLevel};
 use midgard_tools::ToolRegistry;
 
@@ -12,7 +14,11 @@ impl MiddlewareController for TestController {
     }
 
     fn capabilities(&self) -> Vec<CapabilityDescriptor> {
-        vec![CapabilityDescriptor::new("test.inspect", "Inspect test", RiskLevel::Low)]
+        vec![CapabilityDescriptor::new(
+            "test.inspect",
+            "Inspect test",
+            RiskLevel::Low,
+        )]
     }
 
     async fn health(&self) -> ControllerHealth {

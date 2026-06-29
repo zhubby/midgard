@@ -13,6 +13,8 @@ pub enum MidgardError {
     Controller(String),
     #[error("agent error: {0}")]
     Agent(String),
+    #[error("storage error: {0}")]
+    Storage(String),
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -39,11 +41,7 @@ pub struct CapabilityDescriptor {
 }
 
 impl CapabilityDescriptor {
-    pub fn new(
-        id: impl Into<String>,
-        name: impl Into<String>,
-        risk_level: RiskLevel,
-    ) -> Self {
+    pub fn new(id: impl Into<String>, name: impl Into<String>, risk_level: RiskLevel) -> Self {
         let requires_approval = risk_level.requires_approval();
 
         Self {
@@ -100,4 +98,3 @@ impl PlatformConfig {
         }
     }
 }
-

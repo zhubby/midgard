@@ -1,14 +1,9 @@
-use midgard_core::{
-    CapabilityDescriptor, CompletionStatus, LlmConfig, PlatformConfig, RiskLevel,
-};
+use midgard_core::{CapabilityDescriptor, CompletionStatus, LlmConfig, PlatformConfig, RiskLevel};
 
 #[test]
 fn capability_descriptor_marks_approval_for_high_risk_operations() {
-    let capability = CapabilityDescriptor::new(
-        "redis.restart",
-        "Restart Redis workload",
-        RiskLevel::High,
-    );
+    let capability =
+        CapabilityDescriptor::new("redis.restart", "Restart Redis workload", RiskLevel::High);
 
     assert!(capability.requires_approval);
     assert_eq!(capability.risk_level, RiskLevel::High);

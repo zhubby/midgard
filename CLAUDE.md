@@ -5,12 +5,15 @@
 This repository is a Rust workspace with a Bun + Next.js frontend. The current crate layout is root-level `midgard-*` directories:
 
 - `midgard-core`: shared domain types, platform config, risk levels, completion status, and common errors.
+- `midgard-config`: TOML configuration loading, default config creation, and runtime config validation.
 - `midgard-agent`: agent session/message model, OpenAI-compatible provider helpers, and agent completion tools.
+- `midgard-storage`: Toasty/PostgreSQL storage boundary for agent sessions and messages, plus the in-memory session store used by tests.
 - `midgard-tools`: tool trait, tool definitions, registry, execution result types, and risk metadata exposure.
 - `midgard-controller`: middleware controller and plugin contracts.
 - `midgard-k8s`: Kubernetes client abstraction, workload/pod/event summaries, and mock client.
 - `midgard-plugin-example`: example Redis middleware plugin and controller tool registration.
-- `midgard-server`: Axum HTTP API, app state wiring, and the server binary.
+- `midgard-server`: Axum HTTP API library and app state wiring.
+- `midgard-cli`: Clap-based project entrypoint, config init command, server startup, and Toasty migration wrapper.
 - `midgard-ui`: Bun + TypeScript + Next.js frontend.
 
 Keep new code in the crate that owns the domain concern. Avoid leaking HTTP/UI concerns into runtime/domain crates, and avoid putting middleware-specific behavior into generic controller, tool, or Kubernetes abstractions.
@@ -36,7 +39,9 @@ Use workspace-level Cargo commands from the repository root:
 - `cargo test -p midgard-tools --test tool_registry`: run tool registry contract tests.
 - `cargo fmt --all`: apply Rust formatting.
 - `cargo clippy --workspace --all-targets -- -D warnings`: lint strictly.
-- `RUST_LOG=info cargo run -p midgard-server`: run the Axum API on port `8080`.
+- `RUST_LOG=info cargo run -p midgard-cli -- server`: run the Axum API using `~/.midgard/config.toml`.
+- `cargo run -p midgard-cli -- config init`: create the default config file.
+- `cargo run -p midgard-cli -- migrate apply`: apply Toasty migrations to the configured PostgreSQL database.
 
 Frontend commands:
 
@@ -70,6 +75,7 @@ All Rust dependencies should be declared in the root `Cargo.toml` under `[worksp
 ## Server and API Guidelines
 
 - Keep the Axum app constructor in `midgard-server::app()` so tests can exercise routes with `tower::ServiceExt::oneshot`.
+- Keep production startup in `midgard-cli`; `midgard-server` is a library crate and should not grow a separate binary entrypoint.
 - Keep route paths stable under `/api/...` unless the API contract is intentionally changing.
 - Return structured JSON response types instead of ad hoc strings for API responses.
 - Keep `AppState` cloneable and cheap to pass. Use shared state deliberately, and avoid blocking the async runtime with long synchronous work.
@@ -116,7 +122,9 @@ The UI lives in `midgard-ui` and uses the Next.js App Router under `app/`.
 ## Configuration and Security
 
 - Never commit API keys, kubeconfigs, tokens, or production cluster details.
-- LLM provider configuration is OpenAI-compatible and should use environment variables such as `MIDGARD_LLM_BASE_URL`, `MIDGARD_LLM_API_KEY`, and `MIDGARD_LLM_MODEL`.
+- Runtime configuration is loaded from TOML, defaulting to `~/.midgard/config.toml`; use `midgard config init` to create the file.
+- `database.url` and `llm.api_key` are intentionally empty in generated defaults and must be filled by the operator before use.
+- LLM provider configuration is OpenAI-compatible and should stay redacted in logs, tests, fixtures, README snippets, and PR descriptions.
 - Treat Kubernetes operations as high-impact. Make namespace, workload name, and operation intent explicit in APIs and tool arguments.
 - Do not silently downgrade risk levels or bypass approvals for mutating middleware actions.
 - Redact secrets from logs, tests, fixtures, README snippets, and PR descriptions.

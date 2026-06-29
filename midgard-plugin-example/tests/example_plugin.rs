@@ -34,7 +34,10 @@ async fn redis_describe_tool_returns_namespace_context() {
     controller.register_tools(&mut registry);
 
     let result = registry
-        .call("redis_describe", json!({"namespace": "default", "name": "cache"}))
+        .call(
+            "redis_describe",
+            json!({"namespace": "default", "name": "cache"}),
+        )
         .await
         .unwrap();
 

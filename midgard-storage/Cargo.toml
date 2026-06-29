@@ -1,0 +1,17 @@
+[package]
+name = "midgard-storage"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+midgard-agent.workspace = true
+midgard-core.workspace = true
+tokio.workspace = true
+toasty.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -103,4 +103,3 @@ impl ToolRegistry {
         Ok(tool.call(arguments).await)
     }
 }
-
