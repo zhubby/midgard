@@ -1,19 +1,17 @@
-const plugins = [
-  {
-    name: "Example Redis",
-    kind: "redis",
-    tools: ["redis_describe", "redis_restart"],
-    risk: "High-risk restart requires approval",
-  },
-];
+import { AgentConsole } from "@/components/AgentConsole";
+import { ClusterOverview } from "@/components/ClusterOverview";
+import { Metric } from "@/components/Metric";
+import { PluginCatalog } from "@/components/PluginCatalog";
+import { fetchPlugins, fetchTools } from "@/lib/api";
 
-const toolTrace = [
-  "list_namespaces -> default, midgard-system",
-  "redis_describe -> Redis default/cache is ready",
-  "complete_task -> success",
-];
+export default async function Home() {
+  const [plugins, tools] = await Promise.all([
+    fetchPlugins().catch(() => []),
+    fetchTools().catch(() => []),
+  ]);
 
-export default function Home() {
+  const approvalArmed = tools.some((t) => t.requires_approval);
+
   return (
     <main className="shell">
       <nav className="topbar" aria-label="Primary navigation">
@@ -37,110 +35,39 @@ export default function Home() {
           </p>
         </div>
         <div className="statusGrid" aria-label="Current platform metrics">
-          <Metric label="K8s context" value="mock" tone="ready" />
-          <Metric label="Plugins" value="1" tone="ready" />
-          <Metric label="Tools" value="3" tone="ready" />
-          <Metric label="Approvals" value="armed" tone="warn" />
+          <Metric label="Plugins" value={String(plugins.length)} tone="ready" />
+          <Metric label="Tools" value={String(tools.length)} tone="ready" />
+          <Metric
+            label="Approvals"
+            value={approvalArmed ? "armed" : "idle"}
+            tone={approvalArmed ? "warn" : "ready"}
+          />
         </div>
       </section>
 
       <section className="workspace" id="agent-console" aria-label="Agent console">
-        <div className="panel console">
-          <div className="sectionHeader">
-            <p className="eyebrow">Agent Console</p>
-            <h2>Describe the outcome. Inspect the trace.</h2>
-          </div>
-          <form className="promptBox">
-            <label htmlFor="goal">Operations goal</label>
-            <textarea
-              id="goal"
-              name="goal"
-              defaultValue="Inspect Redis in the default namespace and report whether it is healthy."
-            />
-            <button type="button">Run agent</button>
-          </form>
-        </div>
+        <AgentConsole initialSession={null} />
 
-        <aside className="panel trace" aria-label="Tool trace">
-          <p className="eyebrow">Tool trace</p>
-          <ol>
-            {toolTrace.map((item) => (
-              <li key={item}>{item}</li>
+        <aside className="panel" aria-label="Available tools">
+          <p className="eyebrow">Available tools</p>
+          {tools.length === 0 && (
+            <p className="muted">No tools registered.</p>
+          )}
+          <ol className="toolList">
+            {tools.map((tool) => (
+              <li key={tool.name}>
+                <strong>{tool.name}</strong>
+                <span>{tool.description}</span>
+              </li>
             ))}
           </ol>
         </aside>
       </section>
 
       <section className="twoColumn" aria-label="Plugins and cluster">
-        <div className="panel">
-          <div className="sectionHeader">
-            <p className="eyebrow">Plugin Catalog</p>
-            <h2>Registered middleware capabilities</h2>
-          </div>
-          {plugins.map((plugin) => (
-            <article className="plugin" key={plugin.name}>
-              <div>
-                <h3>{plugin.name}</h3>
-                <p>{plugin.kind}</p>
-              </div>
-              <ul>
-                {plugin.tools.map((tool) => (
-                  <li key={tool}>{tool}</li>
-                ))}
-              </ul>
-              <span>{plugin.risk}</span>
-            </article>
-          ))}
-        </div>
-
-        <div className="panel">
-          <div className="sectionHeader">
-            <p className="eyebrow">Cluster Overview</p>
-            <h2>Namespaces and workloads</h2>
-          </div>
-          <div className="clusterRows">
-            <ClusterRow namespace="default" workload="redis" state="Running" />
-            <ClusterRow namespace="midgard-system" workload="midgard-server" state="Pending" />
-          </div>
-        </div>
+        <PluginCatalog plugins={plugins} />
+        <ClusterOverview />
       </section>
     </main>
-  );
-}
-
-function Metric({
-  label,
-  value,
-  tone,
-}: {
-  label: string;
-  value: string;
-  tone: "ready" | "warn";
-}) {
-  return (
-    <div className={`metric ${tone}`}>
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </div>
-  );
-}
-
-function ClusterRow({
-  namespace,
-  workload,
-  state,
-}: {
-  namespace: string;
-  workload: string;
-  state: string;
-}) {
-  return (
-    <article className="clusterRow">
-      <div>
-        <strong>{workload}</strong>
-        <span>{namespace}</span>
-      </div>
-      <p>{state}</p>
-    </article>
   );
 }

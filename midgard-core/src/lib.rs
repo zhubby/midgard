@@ -75,6 +75,8 @@ impl CompletionStatus {
 pub struct LlmConfig {
     pub base_url: String,
     pub model: String,
+    #[serde(default)]
+    pub api_mode: LlmApiMode,
 }
 
 impl LlmConfig {
@@ -82,8 +84,22 @@ impl LlmConfig {
         Self {
             base_url: base_url.into(),
             model: model.into(),
+            api_mode: LlmApiMode::default(),
         }
     }
+
+    pub fn with_api_mode(mut self, api_mode: LlmApiMode) -> Self {
+        self.api_mode = api_mode;
+        self
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LlmApiMode {
+    #[default]
+    ChatCompletions,
+    Responses,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

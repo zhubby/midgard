@@ -5,6 +5,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use http::Method;
 use midgard_agent::{AgentSession, CompleteTaskTool};
 use midgard_controller::{MiddlewareController, MiddlewarePlugin};
 use midgard_plugin_example::ExampleRedisPlugin;
@@ -12,6 +13,7 @@ use midgard_storage::{MemoryAgentSessionStore, SharedAgentSessionStore};
 use midgard_tools::{ToolDefinition, ToolRegistry};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use tower_http::cors::CorsLayer;
 use uuid::Uuid;
 
 #[derive(Clone)]
@@ -45,6 +47,15 @@ pub fn app_with_storage(sessions: SharedAgentSessionStore) -> Router {
         .route("/api/plugins", get(list_plugins))
         .route("/api/agent/sessions", post(create_session))
         .route("/api/agent/sessions/{id}/messages", post(send_message))
+        .layer(
+            CorsLayer::new()
+                .allow_origin([
+                    "http://localhost:3000".parse().unwrap(),
+                    "http://127.0.0.1:3000".parse().unwrap(),
+                ])
+                .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+                .allow_headers(tower_http::cors::Any),
+        )
         .with_state(state)
 }
 

@@ -21,11 +21,13 @@ version = "0.1.0"
 
 [workspace.dependencies]
 anyhow = "1"
+async-stream = "0.3"
 async-trait = "0.1"
 axum = "0.8"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.6", features = ["derive"] }
 dirs = "6"
+futures-util = "0.3"
 midgard-agent = { path = "midgard-agent" }
 midgard-config = { path = "midgard-config" }
 midgard-controller = { path = "midgard-controller" }
@@ -34,13 +36,14 @@ midgard-plugin-example = { path = "midgard-plugin-example" }
 midgard-server = { path = "midgard-server" }
 midgard-tools = { path = "midgard-tools" }
 midgard-storage = { path = "midgard-storage" }
-reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"], default-features = false }
 schemars = { version = "0.8", features = ["chrono"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tempfile = "3"
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio-stream = "0.1"
 toml = "1.1"
 toasty = { version = "0.7", features = ["migration", "postgresql"] }
 toasty-cli = "0.7"
