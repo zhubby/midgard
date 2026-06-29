@@ -26,6 +26,7 @@ midgard-plugin-example      Example middleware plugin
 midgard-server              Axum HTTP API library
 midgard-cli                 Clap CLI entrypoint and migration wrapper
 midgard-web/                 Bun + Next.js UI
+midgard-storage/Toasty.toml Toasty migration config
 midgard-storage/toasty/     Toasty migration history, migrations, and snapshots
 ```
 

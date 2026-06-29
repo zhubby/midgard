@@ -1,5 +1,5 @@
 [migration]
-path = "midgard-storage/toasty"
+path = "toasty"
 prefix_style = "Sequential"
 checksums = false
 statement_breakpoints = true

@@ -11,6 +11,8 @@ use std::{
 };
 use toasty_cli::{Config as ToastyConfig, ToastyCli};
 
+const STORAGE_TOASTY_CONFIG: &str = "midgard-storage/Toasty.toml";
+
 #[derive(Debug, Parser)]
 #[command(name = "midgard")]
 #[command(about = "Midgard operations platform")]
@@ -174,11 +176,15 @@ fn absolute_project_root(project_root: Option<&Path>) -> Result<PathBuf> {
 }
 
 fn load_toasty_config(project_root: &Path) -> Result<ToastyConfig> {
-    let mut config = ToastyConfig::load_or_default(project_root)
-        .with_context(|| format!("load Toasty.toml from {}", project_root.display()))?;
+    let config_path = project_root.join(STORAGE_TOASTY_CONFIG);
+    let config_dir = config_path
+        .parent()
+        .context("determine Toasty config directory")?;
+    let mut config = ToastyConfig::load_from(&config_path)
+        .with_context(|| format!("load Toasty.toml from {}", config_path.display()))?;
 
     if config.migration.path.is_relative() {
-        config.migration.path = project_root.join(&config.migration.path);
+        config.migration.path = config_dir.join(&config.migration.path);
     }
 
     Ok(config)
@@ -340,10 +346,11 @@ mod tests {
     #[test]
     fn toasty_config_migration_path_is_resolved_from_project_root() {
         let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("midgard-storage")).unwrap();
         fs::write(
-            dir.path().join("Toasty.toml"),
+            dir.path().join("midgard-storage/Toasty.toml"),
             r#"[migration]
-path = "midgard-storage/toasty"
+path = "toasty"
 prefix_style = "Sequential"
 checksums = false
 statement_breakpoints = true
@@ -369,6 +376,17 @@ statement_breakpoints = true
         let mut config = MidgardConfig::default_for_new_file();
         config.database.url = database_url;
         fs::write(&config_path, toml::to_string_pretty(&config).unwrap()).unwrap();
+        fs::create_dir_all(dir.path().join("midgard-storage")).unwrap();
+        fs::write(
+            dir.path().join("midgard-storage/Toasty.toml"),
+            r#"[migration]
+path = "toasty"
+prefix_style = "Sequential"
+checksums = false
+statement_breakpoints = true
+"#,
+        )
+        .unwrap();
 
         run_from([
             "midgard",
