@@ -1,12 +1,12 @@
 [workspace]
 members = [
-    "crates/midgard-agent",
-    "crates/midgard-controller",
-    "crates/midgard-core",
-    "crates/midgard-k8s",
-    "crates/midgard-plugin-example",
-    "crates/midgard-server",
-    "crates/midgard-tools",
+    "midgard-agent",
+    "midgard-controller",
+    "midgard-core",
+    "midgard-k8s",
+    "midgard-plugin-example",
+    "midgard-server",
+    "midgard-tools",
 ]
 resolver = "2"
 
@@ -21,6 +21,11 @@ anyhow = "1"
 async-trait = "0.1"
 axum = "0.8"
 chrono = { version = "0.4", features = ["serde"] }
+midgard-agent = { path = "midgard-agent" }
+midgard-controller = { path = "midgard-controller" }
+midgard-core = { path = "midgard-core" }
+midgard-plugin-example = { path = "midgard-plugin-example" }
+midgard-tools = { path = "midgard-tools" }
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 schemars = { version = "0.8", features = ["chrono"] }
 serde = { version = "1", features = ["derive"] }

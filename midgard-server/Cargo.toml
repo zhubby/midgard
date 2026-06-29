@@ -7,11 +7,11 @@ version.workspace = true
 
 [dependencies]
 axum.workspace = true
-midgard-agent = { path = "../midgard-agent" }
-midgard-controller = { path = "../midgard-controller" }
-midgard-core = { path = "../midgard-core" }
-midgard-plugin-example = { path = "../midgard-plugin-example" }
-midgard-tools = { path = "../midgard-tools" }
+midgard-agent.workspace = true
+midgard-controller.workspace = true
+midgard-core.workspace = true
+midgard-plugin-example.workspace = true
+midgard-tools.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
