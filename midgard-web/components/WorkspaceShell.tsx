@@ -13,6 +13,7 @@ import type {
   AgentRunStatus,
   AgentSession,
   ApprovalRecord,
+  AuthUser,
   MiddlewareDashboardState,
   PendingApproval,
   PluginResponse,
@@ -301,7 +302,13 @@ function reduceWorkspaceEvent(
   }
 }
 
-export function WorkspaceShell() {
+interface WorkspaceShellProps {
+  busyAuth: boolean;
+  user: AuthUser;
+  onLogout: () => void;
+}
+
+export function WorkspaceShell({ busyAuth, user, onLogout }: WorkspaceShellProps) {
   const [state, dispatch] = useReducer(reduceWorkspace, initialState);
   const [draft, setDraft] = useState(
     "Inspect Redis in the default namespace and report whether it is healthy.",
@@ -351,7 +358,6 @@ export function WorkspaceShell() {
       const response = await decideApproval(
         state.session.id,
         decision,
-        "operator@midgard.local",
         decision === "approve" ? "Approved from Midgard console" : undefined,
         true,
       );
@@ -384,6 +390,18 @@ export function WorkspaceShell() {
             <span aria-hidden="true" />
             {state.connectionStatus}
           </span>
+          <div className="user-chip" aria-label="Signed in user">
+            <strong>{user.display_name || user.email}</strong>
+            <span>{user.role}</span>
+          </div>
+          <button
+            className="button button-outline logout-button"
+            disabled={busyAuth}
+            type="button"
+            onClick={onLogout}
+          >
+            Logout
+          </button>
         </div>
       </header>
 

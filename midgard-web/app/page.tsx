@@ -1,5 +1,5 @@
-import { WorkspaceShell } from "@/components/WorkspaceShell";
+import { AuthGate } from "@/components/AuthGate";
 
 export default function Home() {
-  return <WorkspaceShell />;
+  return <AuthGate />;
 }

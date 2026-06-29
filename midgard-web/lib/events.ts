@@ -51,7 +51,7 @@ export function connectWorkspaceEvents({
   }
 
   onStatus?.("connecting");
-  const source = new EventSource(url);
+  const source = new EventSource(url, { withCredentials: true });
 
   source.onopen = () => onStatus?.("connected");
   source.onerror = () => {

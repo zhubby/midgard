@@ -1,14 +1,87 @@
 use axum::{
     body::{to_bytes, Body},
-    http::{Request, StatusCode},
+    http::{
+        header::{COOKIE, SET_COOKIE},
+        Request, StatusCode,
+    },
+    Router,
 };
-use midgard_agent::{AgentToolCall, LlmResponse, ScriptedLlmProvider};
-use midgard_server::{app, app_with_provider, app_with_storage};
-use midgard_storage::MemoryAgentSessionStore;
+use midgard_agent::{AgentToolCall, LlmProvider, LlmResponse, ScriptedLlmProvider};
+use midgard_server::{app, app_with_provider_and_auth, AuthSettings};
+use midgard_storage::{
+    hash_password, AuthStore, MemoryAgentSessionStore, MemoryAuthStore, NewUser, UserRole,
+};
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::time::{sleep, Duration};
 use tower::ServiceExt;
+
+const TEST_EMAIL: &str = "operator@example.com";
+const TEST_PASSWORD: &str = "valid-password";
+
+async fn app_with_role(role: UserRole) -> (Router, String, Arc<MemoryAuthStore>) {
+    app_with_role_and_provider(
+        role,
+        Arc::new(ScriptedLlmProvider::single(LlmResponse::text(
+            "LLM provider is not configured for this server instance.",
+        ))),
+    )
+    .await
+}
+
+async fn app_with_role_and_provider(
+    role: UserRole,
+    provider: Arc<dyn LlmProvider>,
+) -> (Router, String, Arc<MemoryAuthStore>) {
+    let auth = Arc::new(MemoryAuthStore::new());
+    auth.create_user(NewUser {
+        email: TEST_EMAIL.to_string(),
+        display_name: "Test Operator".to_string(),
+        role,
+        password_hash: hash_password(TEST_PASSWORD).unwrap(),
+        active: true,
+    })
+    .await
+    .unwrap();
+
+    let app = app_with_provider_and_auth(
+        Arc::new(MemoryAgentSessionStore::new()),
+        auth.clone(),
+        provider,
+        AuthSettings::default(),
+    );
+    let cookie = login_cookie(&app, TEST_EMAIL, TEST_PASSWORD).await;
+
+    (app, cookie, auth)
+}
+
+async fn login_cookie(app: &Router, email: &str, password: &str) -> String {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/auth/login")
+                .header("content-type", "application/json")
+                .body(Body::from(format!(
+                    r#"{{"email":"{email}","password":"{password}"}}"#
+                )))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    response
+        .headers()
+        .get(SET_COOKIE)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string()
+}
 
 #[tokio::test]
 async fn health_endpoint_returns_ok() {
@@ -26,11 +99,195 @@ async fn health_endpoint_returns_ok() {
 }
 
 #[tokio::test]
-async fn tools_endpoint_lists_registered_tools() {
+async fn protected_api_requires_authentication() {
     let response = app()
         .oneshot(
             Request::builder()
                 .uri("/api/tools")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn login_sets_session_cookie_and_me_returns_user() {
+    let (app, cookie, _) = app_with_role(UserRole::Operator).await;
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/auth/me")
+                .header(COOKIE, cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(json["email"], TEST_EMAIL);
+    assert_eq!(json["role"], "operator");
+    assert!(json.get("password_hash").is_none());
+}
+
+#[tokio::test]
+async fn login_rejects_bad_password_without_cookie() {
+    let auth = Arc::new(MemoryAuthStore::new());
+    auth.create_user(NewUser {
+        email: TEST_EMAIL.to_string(),
+        display_name: "Test Operator".to_string(),
+        role: UserRole::Operator,
+        password_hash: hash_password(TEST_PASSWORD).unwrap(),
+        active: true,
+    })
+    .await
+    .unwrap();
+    let app = app_with_provider_and_auth(
+        Arc::new(MemoryAgentSessionStore::new()),
+        auth,
+        Arc::new(ScriptedLlmProvider::single(LlmResponse::text("ok"))),
+        AuthSettings::default(),
+    );
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/auth/login")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"email":"operator@example.com","password":"wrong-password"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert!(response.headers().get(SET_COOKIE).is_none());
+}
+
+#[tokio::test]
+async fn logout_revokes_current_session() {
+    let (app, cookie, _) = app_with_role(UserRole::Operator).await;
+
+    let logout = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/auth/logout")
+                .header(COOKIE, cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(logout.status(), StatusCode::OK);
+
+    let me = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/auth/me")
+                .header(COOKIE, cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(me.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn viewer_can_read_but_cannot_mutate_agent_sessions() {
+    let (app, cookie, _) = app_with_role(UserRole::Viewer).await;
+
+    let read = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/tools")
+                .header(COOKIE, cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(read.status(), StatusCode::OK);
+
+    let write = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/agent/sessions")
+                .header(COOKIE, cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"goal":"inspect redis"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(write.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn admin_can_create_and_list_users() {
+    let (app, cookie, _) = app_with_role(UserRole::Admin).await;
+
+    let create = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/auth/users")
+                .header(COOKIE, cookie.clone())
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"email":"viewer@example.com","password":"valid-password","display_name":"Viewer","role":"viewer"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create.status(), StatusCode::CREATED);
+    let body = to_bytes(create.into_body(), usize::MAX).await.unwrap();
+    let created: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(created["email"], "viewer@example.com");
+    assert!(created.get("password_hash").is_none());
+
+    let list = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/auth/users")
+                .header(COOKIE, cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(list.status(), StatusCode::OK);
+    let body = to_bytes(list.into_body(), usize::MAX).await.unwrap();
+    let users: Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(users.as_array().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn tools_endpoint_lists_registered_tools() {
+    let (app, cookie, _) = app_with_role(UserRole::Viewer).await;
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/tools")
+                .header(COOKIE, cookie)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -48,10 +305,12 @@ async fn tools_endpoint_lists_registered_tools() {
 
 #[tokio::test]
 async fn plugins_endpoint_lists_example_plugin() {
-    let response = app()
+    let (app, cookie, _) = app_with_role(UserRole::Viewer).await;
+    let response = app
         .oneshot(
             Request::builder()
                 .uri("/api/plugins")
+                .header(COOKIE, cookie)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -65,11 +324,13 @@ async fn plugins_endpoint_lists_example_plugin() {
 
 #[tokio::test]
 async fn agent_sessions_endpoint_creates_session() {
-    let response = app()
+    let (app, cookie, _) = app_with_role(UserRole::Operator).await;
+    let response = app
         .oneshot(
             Request::builder()
                 .method("POST")
                 .uri("/api/agent/sessions")
+                .header(COOKIE, cookie)
                 .header("content-type", "application/json")
                 .body(Body::from(r#"{"goal":"inspect redis"}"#))
                 .unwrap(),
@@ -85,11 +346,30 @@ async fn agent_sessions_endpoint_creates_session() {
 
 #[tokio::test]
 async fn app_accepts_injected_session_store() {
-    let response = app_with_storage(Arc::new(MemoryAgentSessionStore::new()))
+    let auth = Arc::new(MemoryAuthStore::new());
+    auth.create_user(NewUser {
+        email: TEST_EMAIL.to_string(),
+        display_name: "Test Operator".to_string(),
+        role: UserRole::Operator,
+        password_hash: hash_password(TEST_PASSWORD).unwrap(),
+        active: true,
+    })
+    .await
+    .unwrap();
+    let app = app_with_provider_and_auth(
+        Arc::new(MemoryAgentSessionStore::new()),
+        auth,
+        Arc::new(ScriptedLlmProvider::single(LlmResponse::text("ok"))),
+        AuthSettings::default(),
+    );
+    let cookie = login_cookie(&app, TEST_EMAIL, TEST_PASSWORD).await;
+
+    let response = app
         .oneshot(
             Request::builder()
                 .method("POST")
                 .uri("/api/agent/sessions")
+                .header(COOKIE, cookie)
                 .header("content-type", "application/json")
                 .body(Body::from(r#"{"goal":"inspect redis"}"#))
                 .unwrap(),
@@ -104,12 +384,14 @@ async fn app_accepts_injected_session_store() {
 
 #[tokio::test]
 async fn missing_session_message_preserves_resumed_session_behavior() {
+    let (app, cookie, _) = app_with_role(UserRole::Operator).await;
     let id = uuid::Uuid::new_v4();
-    let response = app()
+    let response = app
         .oneshot(
             Request::builder()
                 .method("POST")
                 .uri(format!("/api/agent/sessions/{id}/messages"))
+                .header(COOKIE, cookie)
                 .header("content-type", "application/json")
                 .body(Body::from(r#"{"message":"continue"}"#))
                 .unwrap(),
@@ -125,8 +407,8 @@ async fn missing_session_message_preserves_resumed_session_behavior() {
 
 #[tokio::test]
 async fn run_endpoint_executes_agent_loop_and_persists_trace() {
-    let app = app_with_provider(
-        Arc::new(MemoryAgentSessionStore::new()),
+    let (app, cookie, _) = app_with_role_and_provider(
+        UserRole::Operator,
         Arc::new(ScriptedLlmProvider::single(LlmResponse::with_tool_calls(
             "",
             vec![AgentToolCall::from_raw(
@@ -135,13 +417,15 @@ async fn run_endpoint_executes_agent_loop_and_persists_trace() {
                 r#"{"summary":"Redis is healthy"}"#,
             )],
         ))),
-    );
+    )
+    .await;
     let create_response = app
         .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
                 .uri("/api/agent/sessions")
+                .header(COOKIE, cookie.clone())
                 .header("content-type", "application/json")
                 .body(Body::from(r#"{"goal":"inspect redis"}"#))
                 .unwrap(),
@@ -160,6 +444,7 @@ async fn run_endpoint_executes_agent_loop_and_persists_trace() {
             Request::builder()
                 .method("POST")
                 .uri(format!("/api/agent/sessions/{id}/runs"))
+                .header(COOKIE, cookie.clone())
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -179,6 +464,7 @@ async fn run_endpoint_executes_agent_loop_and_persists_trace() {
         .oneshot(
             Request::builder()
                 .uri(format!("/api/workspace/events?session_id={id}&once=true"))
+                .header(COOKIE, cookie)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -195,12 +481,13 @@ async fn run_endpoint_executes_agent_loop_and_persists_trace() {
 
 #[tokio::test]
 async fn stream_endpoint_emits_ordered_sse_run_events() {
-    let app = app_with_provider(
-        Arc::new(MemoryAgentSessionStore::new()),
+    let (app, cookie, _) = app_with_role_and_provider(
+        UserRole::Operator,
         Arc::new(ScriptedLlmProvider::single(LlmResponse::text(
             "Redis is ready",
         ))),
-    );
+    )
+    .await;
     let id = uuid::Uuid::new_v4();
 
     let response = app
@@ -208,6 +495,7 @@ async fn stream_endpoint_emits_ordered_sse_run_events() {
             Request::builder()
                 .method("POST")
                 .uri(format!("/api/agent/sessions/{id}/runs/stream"))
+                .header(COOKIE, cookie)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -223,12 +511,13 @@ async fn stream_endpoint_emits_ordered_sse_run_events() {
 
 #[tokio::test]
 async fn workspace_events_endpoint_emits_connected_snapshot() {
-    let app = app();
+    let (app, cookie, _) = app_with_role(UserRole::Viewer).await;
 
     let response = app
         .oneshot(
             Request::builder()
                 .uri("/api/workspace/events?once=true")
+                .header(COOKIE, cookie)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -245,8 +534,8 @@ async fn workspace_events_endpoint_emits_connected_snapshot() {
 
 #[tokio::test]
 async fn approval_endpoint_records_decision_and_next_run_resumes() {
-    let app = app_with_provider(
-        Arc::new(MemoryAgentSessionStore::new()),
+    let (app, cookie, _) = app_with_role_and_provider(
+        UserRole::Operator,
         Arc::new(ScriptedLlmProvider::new([
             LlmResponse::with_tool_calls(
                 "",
@@ -265,7 +554,8 @@ async fn approval_endpoint_records_decision_and_next_run_resumes() {
                 )],
             ),
         ])),
-    );
+    )
+    .await;
     let id = uuid::Uuid::new_v4();
     let create = app
         .clone()
@@ -273,6 +563,7 @@ async fn approval_endpoint_records_decision_and_next_run_resumes() {
             Request::builder()
                 .method("POST")
                 .uri(format!("/api/agent/sessions/{id}/messages"))
+                .header(COOKIE, cookie.clone())
                 .header("content-type", "application/json")
                 .body(Body::from(r#"{"message":"restart redis"}"#))
                 .unwrap(),
@@ -287,6 +578,7 @@ async fn approval_endpoint_records_decision_and_next_run_resumes() {
             Request::builder()
                 .method("POST")
                 .uri(format!("/api/agent/sessions/{id}/runs"))
+                .header(COOKIE, cookie.clone())
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -304,6 +596,7 @@ async fn approval_endpoint_records_decision_and_next_run_resumes() {
         .oneshot(
             Request::builder()
                 .uri(format!("/api/agent/sessions/{id}/approvals"))
+                .header(COOKIE, cookie.clone())
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -315,29 +608,16 @@ async fn approval_endpoint_records_decision_and_next_run_resumes() {
     assert_eq!(history[0]["status"], "pending");
     assert_eq!(history[0]["tool_call"]["name"], "redis_restart");
 
-    let missing_actor = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/api/agent/sessions/{id}/approvals"))
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"decision":"approve"}"#))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(missing_actor.status(), StatusCode::UNPROCESSABLE_ENTITY);
-
     let approval = app
         .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
                 .uri(format!("/api/agent/sessions/{id}/approvals"))
+                .header(COOKIE, cookie.clone())
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    r#"{"decision":"approve","actor":"operator@example.com","reason":"maintenance window"}"#,
+                    r#"{"decision":"approve","reason":"maintenance window"}"#,
                 ))
                 .unwrap(),
         )
@@ -369,6 +649,7 @@ async fn approval_endpoint_records_decision_and_next_run_resumes() {
         .oneshot(
             Request::builder()
                 .uri(format!("/api/workspace/events?session_id={id}&once=true"))
+                .header(COOKIE, cookie.clone())
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -384,6 +665,7 @@ async fn approval_endpoint_records_decision_and_next_run_resumes() {
         .oneshot(
             Request::builder()
                 .uri(format!("/api/agent/sessions/{id}/approvals"))
+                .header(COOKIE, cookie)
                 .body(Body::empty())
                 .unwrap(),
         )

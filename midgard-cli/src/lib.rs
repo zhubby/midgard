@@ -2,8 +2,11 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use midgard_agent::OpenAiCompatibleProvider;
 use midgard_config::{default_config_path, ensure_default_config, load_or_create};
-use midgard_server::app_with_provider;
-use midgard_storage::{connect_database, PostgresAgentSessionStore};
+use midgard_server::{app_with_provider_and_auth, AuthSettings};
+use midgard_storage::{
+    connect_database, hash_password, normalize_email, AuthStore, NewAuthAuditEvent, NewUser,
+    PostgresAgentSessionStore, UserRole,
+};
 use std::{
     ffi::OsString,
     net::SocketAddr,
@@ -44,6 +47,12 @@ enum Command {
     Migrate {
         #[command(subcommand)]
         command: MigrateCommand,
+    },
+
+    /// Manage Midgard authentication
+    Auth {
+        #[command(subcommand)]
+        command: AuthCommand,
     },
 }
 
@@ -86,6 +95,21 @@ enum MigrateCommand {
     Snapshot,
 }
 
+#[derive(Debug, Subcommand)]
+enum AuthCommand {
+    /// Create the initial administrator account
+    SeedAdmin {
+        #[arg(long)]
+        email: String,
+
+        #[arg(long)]
+        password: String,
+
+        #[arg(long)]
+        display_name: Option<String>,
+    },
+}
+
 pub async fn run() -> Result<()> {
     let cli = Cli::parse();
     run_cli(cli).await
@@ -121,6 +145,7 @@ async fn run_cli(cli: Cli) -> Result<()> {
         Command::Migrate { command } => {
             run_migration(cli.config.as_deref(), cli.project_root.as_deref(), command).await
         }
+        Command::Auth { command } => run_auth(cli.config.as_deref(), command).await,
     }
 }
 
@@ -135,10 +160,16 @@ async fn run_server(config_path: Option<&Path>) -> Result<()> {
         .parse()
         .with_context(|| format!("invalid server.bind_address in {}", loaded.path.display()))?;
 
-    let store = PostgresAgentSessionStore::connect(database_url).await?;
+    let store = Arc::new(PostgresAgentSessionStore::connect(database_url).await?);
     let provider = OpenAiCompatibleProvider::new(
         loaded.config.llm_config(),
         loaded.config.llm.api_key.clone(),
+    );
+    let auth_settings = AuthSettings::new(
+        loaded.config.auth.session_ttl_hours,
+        loaded.config.auth.cookie_name.clone(),
+        loaded.config.auth.cookie_secure,
+        loaded.config.auth.cookie_same_site.clone(),
     );
     let listener = tokio::net::TcpListener::bind(address)
         .await
@@ -147,10 +178,57 @@ async fn run_server(config_path: Option<&Path>) -> Result<()> {
     tracing::info!(%address, config = %loaded.path.display(), "midgard server listening");
     axum::serve(
         listener,
-        app_with_provider(Arc::new(store), Arc::new(provider)),
+        app_with_provider_and_auth(store.clone(), store, Arc::new(provider), auth_settings),
     )
     .await
     .context("serve Midgard API")
+}
+
+async fn run_auth(config_path: Option<&Path>, command: AuthCommand) -> Result<()> {
+    let loaded = load_or_create(config_path)?;
+    let database_url = loaded.config.require_database_url()?;
+    let store = PostgresAgentSessionStore::connect(database_url).await?;
+
+    match command {
+        AuthCommand::SeedAdmin {
+            email,
+            password,
+            display_name,
+        } => {
+            let email_lower = normalize_email(&email);
+            if store.load_user_by_email(&email_lower).await?.is_some() {
+                println!("admin user already exists for {email_lower}");
+                return Ok(());
+            }
+
+            let user = store
+                .create_user(NewUser {
+                    email: email_lower.clone(),
+                    display_name: display_name
+                        .map(|value| value.trim().to_string())
+                        .filter(|value| !value.is_empty())
+                        .unwrap_or_else(|| email_lower.clone()),
+                    role: UserRole::Admin,
+                    password_hash: hash_password(&password)?,
+                    active: true,
+                })
+                .await?;
+            store
+                .record_auth_audit_event(NewAuthAuditEvent {
+                    user_id: Some(user.id),
+                    event_type: "seed_admin_created".to_string(),
+                    email_lower: Some(user.email.clone()),
+                    occurred_at: chrono::Utc::now().to_rfc3339(),
+                    ip_address: None,
+                    user_agent: None,
+                    detail_json: Some(r#"{"actor":"midgard-cli"}"#.to_string()),
+                })
+                .await?;
+
+            println!("created admin user {}", user.email);
+            Ok(())
+        }
+    }
 }
 
 async fn run_migration(
@@ -326,6 +404,29 @@ mod tests {
             "apply",
             "--project-root",
             dir.path().to_str().unwrap(),
+        ])
+        .await
+        .unwrap_err();
+
+        assert!(err.to_string().contains("database.url is empty"));
+    }
+
+    #[tokio::test]
+    async fn auth_seed_admin_fails_when_database_url_is_empty() {
+        let dir = tempdir().unwrap();
+        let config_path = dir.path().join("config.toml");
+        ensure_default_config(&config_path, true).unwrap();
+
+        let err = run_from([
+            "midgard",
+            "--config",
+            config_path.to_str().unwrap(),
+            "auth",
+            "seed-admin",
+            "--email",
+            "admin@example.com",
+            "--password",
+            "valid-password",
         ])
         .await
         .unwrap_err();

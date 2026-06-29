@@ -29,6 +29,18 @@ export type AgentSession = { id: string, messages: Array<AgentMessage>, iteratio
 
 export type AgentRunEvent = { "type": "model_delta", content: string, } | { "type": "assistant_message", message: AgentMessage, } | { "type": "tool_call_requested", tool_call: AgentToolCall, } | { "type": "tool_result", tool_call_id: string, name: string, result: ToolResult, } | { "type": "approval_required", approval: PendingApproval, } | { "type": "completed", status: AgentRunStatus, output: string, } | { "type": "failed", error: string, };
 
+export type UserRole = "admin" | "operator" | "viewer";
+
+export type AuthUser = { id: string, email: string, display_name: string, role: UserRole, active: boolean, created_at: string, updated_at: string, last_login_at?: string | null, };
+
+export type LoginRequest = { email: string, password: string, };
+
+export type CreateAuthUserRequest = { email: string, password: string, display_name: string | null, role: UserRole, active: boolean, };
+
+export type UpdateAuthUserRequest = { password: string | null, display_name: string | null, role: UserRole | null, active: boolean | null, };
+
+export type LogoutResponse = { ok: boolean, };
+
 export type PluginResponse = { id: string, name: string, middleware_kind: string, };
 
 export type RunAccepted = { run_id: string, session_id: string, status: AgentRunStatus, };

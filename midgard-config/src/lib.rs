@@ -12,6 +12,8 @@ const CONFIG_FILE: &str = "config.toml";
 pub struct MidgardConfig {
     pub server: ServerConfig,
     pub database: DatabaseConfig,
+    #[serde(default)]
+    pub auth: AuthConfig,
     pub llm: LlmFileConfig,
 }
 
@@ -22,6 +24,7 @@ impl MidgardConfig {
                 bind_address: "0.0.0.0:8080".to_string(),
             },
             database: DatabaseConfig { url: String::new() },
+            auth: AuthConfig::default(),
             llm: LlmFileConfig {
                 base_url: "https://api.openai.com/v1".to_string(),
                 model: "gpt-4o-mini".to_string(),
@@ -62,6 +65,25 @@ pub struct ServerConfig {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct DatabaseConfig {
     pub url: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct AuthConfig {
+    pub session_ttl_hours: u64,
+    pub cookie_name: String,
+    pub cookie_secure: bool,
+    pub cookie_same_site: String,
+}
+
+impl Default for AuthConfig {
+    fn default() -> Self {
+        Self {
+            session_ttl_hours: 12,
+            cookie_name: "midgard_session".to_string(),
+            cookie_secure: false,
+            cookie_same_site: "lax".to_string(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -184,6 +206,7 @@ mod tests {
         assert!(loaded.created);
         assert_eq!(loaded.path, path);
         assert_eq!(loaded.config.database.url, "");
+        assert_eq!(loaded.config.auth.cookie_name, "midgard_session");
         assert_eq!(loaded.config.server.bind_address, "0.0.0.0:8080");
         assert!(loaded.path.exists());
     }
@@ -211,6 +234,7 @@ mod tests {
         assert!(created);
         let contents = fs::read_to_string(path).unwrap();
         assert!(contents.contains("[database]"));
+        assert!(contents.contains("[auth]"));
         assert!(contents.contains("url = \"\""));
     }
 

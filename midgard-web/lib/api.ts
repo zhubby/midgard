@@ -2,6 +2,7 @@ import type {
   ApprovalRecord,
   AgentSession,
   ApprovalResponse,
+  AuthUser,
   PluginResponse,
   RunAccepted,
   ToolDefinition,
@@ -10,7 +11,10 @@ import type {
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, init);
+  const res = await fetch(`${API_BASE}${path}`, {
+    ...init,
+    credentials: "include",
+  });
 
   if (!res.ok) {
     const body = await res.text().catch(() => "");
@@ -18,6 +22,24 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   return res.json() as Promise<T>;
+}
+
+export function fetchCurrentUser(init?: RequestInit): Promise<AuthUser> {
+  return request<AuthUser>("/api/auth/me", init);
+}
+
+export function login(email: string, password: string): Promise<AuthUser> {
+  return request<AuthUser>("/api/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password }),
+  });
+}
+
+export function logout(): Promise<{ ok: boolean }> {
+  return request<{ ok: boolean }>("/api/auth/logout", {
+    method: "POST",
+  });
 }
 
 export function fetchTools(): Promise<ToolDefinition[]> {
@@ -56,14 +78,13 @@ export function runAgent(sessionId: string): Promise<RunAccepted> {
 export function decideApproval(
   sessionId: string,
   decision: "approve" | "reject",
-  actor: string,
   reason?: string,
   resume = true,
 ): Promise<ApprovalResponse> {
   return request<ApprovalResponse>(`/api/agent/sessions/${sessionId}/approvals`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ decision, actor, reason, resume }),
+    body: JSON.stringify({ decision, reason, resume }),
   });
 }
 

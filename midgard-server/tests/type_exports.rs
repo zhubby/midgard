@@ -6,10 +6,12 @@ use midgard_agent::{
 };
 use midgard_core::{CompletionStatus, RiskLevel};
 use midgard_server::{
-    AgentRunResponse, ApprovalResponse, DashboardTone, MiddlewareDashboardState, MiddlewareMetric,
-    MiddlewareTimelineEvent, MiddlewareWorkload, PluginResponse, RunAccepted, WorkspaceEvent,
+    AgentRunResponse, ApprovalResponse, CreateAuthUserRequest, DashboardTone, LoginRequest,
+    LogoutResponse, MiddlewareDashboardState, MiddlewareMetric, MiddlewareTimelineEvent,
+    MiddlewareWorkload, PluginResponse, RunAccepted, UpdateAuthUserRequest, WorkspaceEvent,
     WorkspaceEventPayload, WorkspaceEventType, WorkspaceSnapshot,
 };
+use midgard_storage::{AuthUser, UserRole};
 use midgard_tools::{ToolDefinition, ToolResult};
 use ts_rs::{Config, TS};
 
@@ -52,6 +54,12 @@ fn protocol_typescript() -> String {
         ApprovalRecord::decl(&cfg),
         AgentSession::decl(&cfg),
         AgentRunEvent::decl(&cfg),
+        UserRole::decl(&cfg),
+        AuthUser::decl(&cfg),
+        LoginRequest::decl(&cfg),
+        CreateAuthUserRequest::decl(&cfg),
+        UpdateAuthUserRequest::decl(&cfg),
+        LogoutResponse::decl(&cfg),
         PluginResponse::decl(&cfg),
         RunAccepted::decl(&cfg),
         AgentRunResponse::decl(&cfg),

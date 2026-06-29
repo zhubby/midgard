@@ -14,3 +14,8 @@ snapshot_name = "0001_snapshot.toml"
 id = 3
 name = "0002_create_agent_approval_records.sql"
 snapshot_name = "0002_snapshot.toml"
+
+[[migrations]]
+id = 4
+name = "0003_create_auth_tables.sql"
+snapshot_name = "0003_snapshot.toml"

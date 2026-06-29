@@ -8,14 +8,19 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use http::{HeaderValue, Method};
+use http::{
+    header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE},
+    HeaderName, HeaderValue, Method,
+};
 use midgard_agent::{
     AgentRunEvent, AgentRunStatus, AgentRunner, AgentSession, ApprovalDecision, ApprovalRecord,
     CompleteTaskTool, LlmProvider, LlmResponse, PendingApproval, ScriptedLlmProvider,
 };
 use midgard_controller::{MiddlewareController, MiddlewarePlugin};
 use midgard_plugin_example::ExampleRedisPlugin;
-use midgard_storage::{MemoryAgentSessionStore, SharedAgentSessionStore};
+use midgard_storage::{
+    MemoryAgentSessionStore, MemoryAuthStore, SharedAgentSessionStore, SharedAuthStore,
+};
 use midgard_tools::{ToolDefinition, ToolRegistry};
 use serde::{Deserialize, Serialize};
 use std::{convert::Infallible, sync::Arc, time::Duration};
@@ -24,8 +29,12 @@ use tower_http::cors::CorsLayer;
 use ts_rs::TS;
 use uuid::Uuid;
 
+mod auth;
 mod workspace;
 
+pub use auth::{
+    AuthSettings, CreateAuthUserRequest, LoginRequest, LogoutResponse, UpdateAuthUserRequest,
+};
 pub use workspace::{
     agent_run_event_payload, DashboardTone, MiddlewareDashboardState, MiddlewareMetric,
     MiddlewareTimelineEvent, MiddlewareWorkload, WorkspaceEvent, WorkspaceEventBus,
@@ -34,12 +43,14 @@ pub use workspace::{
 
 #[derive(Clone)]
 pub struct AppState {
-    tools: Arc<ToolRegistry>,
-    runner: Arc<AgentRunner>,
-    plugins: Arc<Vec<PluginResponse>>,
-    sessions: SharedAgentSessionStore,
-    events: WorkspaceEventBus,
-    middleware: Arc<MiddlewareDashboardState>,
+    pub(crate) tools: Arc<ToolRegistry>,
+    pub(crate) runner: Arc<AgentRunner>,
+    pub(crate) plugins: Arc<Vec<PluginResponse>>,
+    pub(crate) sessions: SharedAgentSessionStore,
+    pub(crate) auth: SharedAuthStore,
+    pub(crate) auth_settings: AuthSettings,
+    pub(crate) events: WorkspaceEventBus,
+    pub(crate) middleware: Arc<MiddlewareDashboardState>,
 }
 
 pub fn app() -> Router {
@@ -59,6 +70,20 @@ pub fn app_with_provider(
     sessions: SharedAgentSessionStore,
     provider: Arc<dyn LlmProvider>,
 ) -> Router {
+    app_with_provider_and_auth(
+        sessions,
+        Arc::new(MemoryAuthStore::new()),
+        provider,
+        AuthSettings::default(),
+    )
+}
+
+pub fn app_with_provider_and_auth(
+    sessions: SharedAgentSessionStore,
+    auth: SharedAuthStore,
+    provider: Arc<dyn LlmProvider>,
+    auth_settings: AuthSettings,
+) -> Router {
     let mut registry = ToolRegistry::default();
     registry.register(CompleteTaskTool);
 
@@ -73,12 +98,25 @@ pub fn app_with_provider(
         runner,
         plugins: Arc::new(vec![PluginResponse::from(plugin.metadata())]),
         sessions,
+        auth,
+        auth_settings,
         events: WorkspaceEventBus::new(),
         middleware: Arc::new(MiddlewareDashboardState::mock()),
     };
 
     Router::new()
         .route("/healthz", get(healthz))
+        .route("/api/auth/login", post(auth::login))
+        .route("/api/auth/logout", post(auth::logout))
+        .route("/api/auth/me", get(auth::me))
+        .route(
+            "/api/auth/users",
+            get(auth::list_users).post(auth::create_user),
+        )
+        .route(
+            "/api/auth/users/{id}",
+            axum::routing::patch(auth::update_user),
+        )
         .route("/api/workspace/events", get(workspace_events))
         .route("/api/tools", get(list_tools))
         .route("/api/plugins", get(list_plugins))
@@ -96,8 +134,14 @@ pub fn app_with_provider(
                     HeaderValue::from_static("http://localhost:3000"),
                     HeaderValue::from_static("http://127.0.0.1:3000"),
                 ])
-                .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
-                .allow_headers(tower_http::cors::Any),
+                .allow_methods([Method::GET, Method::POST, Method::PATCH, Method::OPTIONS])
+                .allow_headers([
+                    ACCEPT,
+                    AUTHORIZATION,
+                    CONTENT_TYPE,
+                    HeaderName::from_static("last-event-id"),
+                ])
+                .allow_credentials(true),
         )
         .with_state(state)
 }
@@ -108,18 +152,26 @@ async fn healthz() -> impl IntoResponse {
     })
 }
 
-async fn list_tools(State(state): State<AppState>) -> impl IntoResponse {
+async fn list_tools(
+    _user: auth::AuthenticatedUser,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
     Json(state.tools.definitions())
 }
 
-async fn list_plugins(State(state): State<AppState>) -> impl IntoResponse {
+async fn list_plugins(
+    _user: auth::AuthenticatedUser,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
     Json((*state.plugins).clone())
 }
 
 async fn create_session(
+    user: auth::AuthenticatedUser,
     State(state): State<AppState>,
     Json(request): Json<CreateSessionRequest>,
 ) -> Result<Json<AgentSession>, AppError> {
+    user.require_operator()?;
     let session = state.sessions.create_session(request.goal).await?;
     state
         .events
@@ -131,10 +183,12 @@ async fn create_session(
 }
 
 async fn send_message(
+    user: auth::AuthenticatedUser,
     Path(id): Path<Uuid>,
     State(state): State<AppState>,
     Json(request): Json<SendMessageRequest>,
 ) -> Result<Json<AgentSession>, AppError> {
+    user.require_operator()?;
     let session = state
         .sessions
         .append_user_message(id, request.message)
@@ -157,9 +211,11 @@ async fn send_message(
 }
 
 async fn run_agent(
+    user: auth::AuthenticatedUser,
     Path(id): Path<Uuid>,
     State(state): State<AppState>,
 ) -> Result<(StatusCode, Json<RunAccepted>), AppError> {
+    user.require_operator()?;
     let run_id = Uuid::new_v4();
     spawn_agent_run(state, id, run_id);
 
@@ -174,9 +230,11 @@ async fn run_agent(
 }
 
 async fn stream_agent(
+    user: auth::AuthenticatedUser,
     Path(id): Path<Uuid>,
     State(state): State<AppState>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, AppError> {
+    user.require_operator()?;
     let session = load_or_resumed_session(&state, id).await?;
     let result = state.runner.run(session).await?;
     state.sessions.save_session(result.session).await?;
@@ -188,12 +246,14 @@ async fn stream_agent(
 }
 
 async fn record_approval(
+    user: auth::AuthenticatedUser,
     Path(id): Path<Uuid>,
     State(state): State<AppState>,
     Json(request): Json<ApprovalRequest>,
 ) -> Result<Json<ApprovalResponse>, AppError> {
+    user.require_operator()?;
     let mut session = load_or_resumed_session(&state, id).await?;
-    let actor = validated_actor(request.actor)?;
+    let actor = user.actor();
     let approval = session.record_approval_decision(request.decision.clone())?;
     let approval_record = state
         .sessions
@@ -222,21 +282,11 @@ async fn record_approval(
 }
 
 async fn list_approval_records(
+    _user: auth::AuthenticatedUser,
     Path(id): Path<Uuid>,
     State(state): State<AppState>,
 ) -> Result<Json<Vec<ApprovalRecord>>, AppError> {
     Ok(Json(state.sessions.list_approval_records(id).await?))
-}
-
-fn validated_actor(actor: String) -> Result<String, AppError> {
-    let actor = actor.trim().to_string();
-    if actor.is_empty() {
-        return Err(AppError(midgard_core::MidgardError::Configuration(
-            "approval actor is required".to_string(),
-        )));
-    }
-
-    Ok(actor)
 }
 
 async fn load_or_resumed_session(state: &AppState, id: Uuid) -> Result<AgentSession, AppError> {
@@ -251,6 +301,7 @@ async fn load_or_resumed_session(state: &AppState, id: Uuid) -> Result<AgentSess
 }
 
 async fn workspace_events(
+    _user: auth::AuthenticatedUser,
     Query(query): Query<WorkspaceEventsQuery>,
     headers: HeaderMap,
     State(state): State<AppState>,
@@ -352,7 +403,7 @@ fn spawn_agent_run(state: AppState, session_id: Uuid, run_id: Uuid) {
             Err(err) => {
                 state.events.publish(WorkspaceEventPayload::AgentRunFailed {
                     session_id: session_id.to_string(),
-                    error: err.0.to_string(),
+                    error: err.to_string(),
                 });
                 return;
             }
@@ -458,7 +509,6 @@ struct SendMessageRequest {
 #[derive(Debug, Deserialize)]
 struct ApprovalRequest {
     decision: ApprovalDecision,
-    actor: String,
     reason: Option<String>,
     #[serde(default = "default_resume_approved_run")]
     resume: bool,
@@ -504,28 +554,52 @@ struct ErrorResponse {
 }
 
 #[derive(Debug)]
-struct AppError(midgard_core::MidgardError);
+pub(crate) enum AppError {
+    Midgard(midgard_core::MidgardError),
+    Unauthorized(String),
+    Forbidden(String),
+    BadRequest(String),
+    NotFound(String),
+    Conflict(String),
+    Internal(String),
+}
+
+impl std::fmt::Display for AppError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AppError::Midgard(err) => write!(f, "{err}"),
+            AppError::Unauthorized(message)
+            | AppError::Forbidden(message)
+            | AppError::BadRequest(message)
+            | AppError::NotFound(message)
+            | AppError::Conflict(message)
+            | AppError::Internal(message) => f.write_str(message),
+        }
+    }
+}
 
 impl From<midgard_core::MidgardError> for AppError {
     fn from(value: midgard_core::MidgardError) -> Self {
-        Self(value)
+        Self::Midgard(value)
     }
 }
 
 impl IntoResponse for AppError {
     fn into_response(self) -> axum::response::Response {
-        let status = match self.0 {
-            midgard_core::MidgardError::Configuration(_) => StatusCode::BAD_REQUEST,
-            _ => StatusCode::INTERNAL_SERVER_ERROR,
+        let (status, message) = match self {
+            AppError::Midgard(midgard_core::MidgardError::Configuration(message)) => {
+                (StatusCode::BAD_REQUEST, message)
+            }
+            AppError::Midgard(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+            AppError::Unauthorized(message) => (StatusCode::UNAUTHORIZED, message),
+            AppError::Forbidden(message) => (StatusCode::FORBIDDEN, message),
+            AppError::BadRequest(message) => (StatusCode::BAD_REQUEST, message),
+            AppError::NotFound(message) => (StatusCode::NOT_FOUND, message),
+            AppError::Conflict(message) => (StatusCode::CONFLICT, message),
+            AppError::Internal(message) => (StatusCode::INTERNAL_SERVER_ERROR, message),
         };
 
-        (
-            status,
-            Json(ErrorResponse {
-                error: self.0.to_string(),
-            }),
-        )
-            .into_response()
+        (status, Json(ErrorResponse { error: message })).into_response()
     }
 }
 

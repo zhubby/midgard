@@ -195,6 +195,15 @@ pub(crate) fn i64_from_value(value: &stmt::Value) -> MidgardResult<i64> {
     }
 }
 
+pub(crate) fn bool_from_value(value: &stmt::Value) -> MidgardResult<bool> {
+    match value {
+        stmt::Value::Bool(value) => Ok(*value),
+        other => Err(MidgardError::Storage(format!(
+            "expected bool, got {other:?}"
+        ))),
+    }
+}
+
 pub(crate) fn string_from_value(value: &stmt::Value) -> MidgardResult<&str> {
     match value {
         stmt::Value::String(value) => Ok(value),
