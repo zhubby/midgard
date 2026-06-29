@@ -28,6 +28,7 @@ chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.6", features = ["derive"] }
 dirs = "6"
 futures-util = "0.3"
+http = "1"
 midgard-agent = { path = "midgard-agent" }
 midgard-config = { path = "midgard-config" }
 midgard-controller = { path = "midgard-controller" }

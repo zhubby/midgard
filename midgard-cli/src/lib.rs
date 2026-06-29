@@ -1,7 +1,8 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use midgard_agent::OpenAiCompatibleProvider;
 use midgard_config::{default_config_path, ensure_default_config, load_or_create};
-use midgard_server::app_with_storage;
+use midgard_server::app_with_provider;
 use midgard_storage::{connect_database, PostgresAgentSessionStore};
 use std::{
     ffi::OsString,
@@ -135,14 +136,21 @@ async fn run_server(config_path: Option<&Path>) -> Result<()> {
         .with_context(|| format!("invalid server.bind_address in {}", loaded.path.display()))?;
 
     let store = PostgresAgentSessionStore::connect(database_url).await?;
+    let provider = OpenAiCompatibleProvider::new(
+        loaded.config.llm_config(),
+        loaded.config.llm.api_key.clone(),
+    );
     let listener = tokio::net::TcpListener::bind(address)
         .await
         .with_context(|| format!("bind Midgard server to {address}"))?;
 
     tracing::info!(%address, config = %loaded.path.display(), "midgard server listening");
-    axum::serve(listener, app_with_storage(Arc::new(store)))
-        .await
-        .context("serve Midgard API")
+    axum::serve(
+        listener,
+        app_with_provider(Arc::new(store), Arc::new(provider)),
+    )
+    .await
+    .context("serve Midgard API")
 }
 
 async fn run_migration(

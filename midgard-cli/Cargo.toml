@@ -13,6 +13,7 @@ path = "src/main.rs"
 anyhow.workspace = true
 axum.workspace = true
 clap.workspace = true
+midgard-agent.workspace = true
 midgard-config.workspace = true
 midgard-server.workspace = true
 midgard-storage.workspace = true

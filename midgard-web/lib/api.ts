@@ -1,4 +1,10 @@
-import type { AgentSession, PluginResponse, ToolDefinition } from "./types";
+import type {
+  AgentRunResponse,
+  AgentSession,
+  ApprovalResponse,
+  PluginResponse,
+  ToolDefinition,
+} from "./types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080";
 
@@ -37,5 +43,22 @@ export function sendMessage(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ message }),
+  });
+}
+
+export function runAgent(sessionId: string): Promise<AgentRunResponse> {
+  return request<AgentRunResponse>(`/api/agent/sessions/${sessionId}/runs`, {
+    method: "POST",
+  });
+}
+
+export function decideApproval(
+  sessionId: string,
+  decision: "approve" | "reject",
+): Promise<ApprovalResponse> {
+  return request<ApprovalResponse>(`/api/agent/sessions/${sessionId}/approvals`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ decision }),
   });
 }

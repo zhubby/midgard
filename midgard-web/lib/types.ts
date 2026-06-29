@@ -15,14 +15,57 @@ export interface ToolDefinition {
 }
 
 export type AgentRole = "system" | "user" | "assistant" | "tool";
+export type AgentRunStatus =
+  | "running"
+  | "completed"
+  | "awaiting_approval"
+  | "responded"
+  | "max_iterations"
+  | "failed";
+
+export interface AgentToolCall {
+  id: string;
+  name: string;
+  arguments: unknown;
+  raw_arguments: string;
+}
 
 export interface AgentMessage {
   role: AgentRole;
   content: string;
+  tool_calls?: AgentToolCall[];
+  tool_call_id?: string;
+}
+
+export interface PendingApproval {
+  id: string;
+  tool_call: AgentToolCall;
+  risk_level: RiskLevel;
+  approved?: boolean;
 }
 
 export interface AgentSession {
   id: string;
   messages: AgentMessage[];
   iteration_count: number;
+  status: AgentRunStatus;
+  pending_approval?: PendingApproval;
+  last_error?: string;
+}
+
+export interface AgentRunEvent {
+  type: string;
+  [key: string]: unknown;
+}
+
+export interface AgentRunResponse {
+  status: AgentRunStatus;
+  pending_approval?: PendingApproval;
+  events: AgentRunEvent[];
+  session: AgentSession;
+}
+
+export interface ApprovalResponse {
+  approval: PendingApproval;
+  session: AgentSession;
 }

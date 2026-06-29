@@ -1,0 +1,217 @@
+use midgard_core::{MidgardError, MidgardResult, RiskLevel};
+use midgard_tools::ToolResult;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use uuid::Uuid;
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentRole {
+    System,
+    User,
+    Assistant,
+    Tool,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct AgentToolCall {
+    pub id: String,
+    pub name: String,
+    pub arguments: Value,
+    pub raw_arguments: String,
+}
+
+impl AgentToolCall {
+    pub fn new(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        arguments: Value,
+        raw_arguments: impl Into<String>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            arguments,
+            raw_arguments: raw_arguments.into(),
+        }
+    }
+
+    pub fn from_raw(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        raw_arguments: impl Into<String>,
+    ) -> Self {
+        let raw_arguments = raw_arguments.into();
+        let arguments = serde_json::from_str(&raw_arguments).unwrap_or(Value::Null);
+
+        Self::new(id, name, arguments, raw_arguments)
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct AgentMessage {
+    pub role: AgentRole,
+    pub content: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<AgentToolCall>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+}
+
+impl AgentMessage {
+    pub fn system(content: impl Into<String>) -> Self {
+        Self::new(AgentRole::System, content)
+    }
+
+    pub fn user(content: impl Into<String>) -> Self {
+        Self::new(AgentRole::User, content)
+    }
+
+    pub fn assistant(content: impl Into<String>) -> Self {
+        Self::new(AgentRole::Assistant, content)
+    }
+
+    pub fn assistant_with_tool_calls(
+        content: impl Into<String>,
+        tool_calls: Vec<AgentToolCall>,
+    ) -> Self {
+        Self {
+            role: AgentRole::Assistant,
+            content: content.into(),
+            tool_calls,
+            tool_call_id: None,
+        }
+    }
+
+    pub fn tool_result(tool_call_id: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            role: AgentRole::Tool,
+            content: content.into(),
+            tool_calls: Vec::new(),
+            tool_call_id: Some(tool_call_id.into()),
+        }
+    }
+
+    fn new(role: AgentRole, content: impl Into<String>) -> Self {
+        Self {
+            role,
+            content: content.into(),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentRunStatus {
+    Running,
+    Completed,
+    AwaitingApproval,
+    #[default]
+    Responded,
+    MaxIterations,
+    Failed,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct PendingApproval {
+    pub id: Uuid,
+    pub tool_call: AgentToolCall,
+    pub risk_level: RiskLevel,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approved: Option<bool>,
+}
+
+impl PendingApproval {
+    pub fn new(tool_call: AgentToolCall, risk_level: RiskLevel) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            tool_call,
+            risk_level,
+            approved: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalDecision {
+    Approve,
+    Reject,
+}
+
+impl ApprovalDecision {
+    pub fn approved(&self) -> bool {
+        matches!(self, ApprovalDecision::Approve)
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct AgentSession {
+    pub id: Uuid,
+    pub messages: Vec<AgentMessage>,
+    pub iteration_count: usize,
+    #[serde(default)]
+    pub status: AgentRunStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_approval: Option<PendingApproval>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+}
+
+impl AgentSession {
+    pub fn new(goal: impl Into<String>) -> Self {
+        Self {
+            id: Uuid::new_v4(),
+            messages: vec![AgentMessage::user(goal)],
+            iteration_count: 0,
+            status: AgentRunStatus::Responded,
+            pending_approval: None,
+            last_error: None,
+        }
+    }
+
+    pub fn record_approval_decision(
+        &mut self,
+        decision: ApprovalDecision,
+    ) -> MidgardResult<PendingApproval> {
+        let mut approval = self.pending_approval.clone().ok_or_else(|| {
+            MidgardError::Agent("session does not have a pending approval".to_string())
+        })?;
+        approval.approved = Some(decision.approved());
+        self.pending_approval = Some(approval.clone());
+        self.status = AgentRunStatus::Running;
+
+        Ok(approval)
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AgentRunEvent {
+    ModelDelta {
+        content: String,
+    },
+    AssistantMessage {
+        message: AgentMessage,
+    },
+    ToolCallRequested {
+        tool_call: AgentToolCall,
+    },
+    ToolResult {
+        tool_call_id: String,
+        name: String,
+        result: ToolResult,
+    },
+    ApprovalRequired {
+        approval: PendingApproval,
+    },
+    Completed {
+        status: AgentRunStatus,
+        output: String,
+    },
+    Failed {
+        error: String,
+    },
+}

@@ -7,7 +7,7 @@ version.workspace = true
 
 [dependencies]
 axum.workspace = true
-http = "1"
+http.workspace = true
 midgard-agent.workspace = true
 midgard-controller.workspace = true
 midgard-core.workspace = true
@@ -17,6 +17,7 @@ midgard-tools.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+tokio-stream.workspace = true
 tower.workspace = true
 tower-http.workspace = true
 tracing.workspace = true

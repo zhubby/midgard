@@ -4,3 +4,8 @@ version = 1
 id = 1
 name = "0000_create_agent_sessions_and_messages.sql"
 snapshot_name = "0000_snapshot.toml"
+
+[[migrations]]
+id = 2
+name = "0001_add_react_session_trace.sql"
+snapshot_name = "0001_snapshot.toml"

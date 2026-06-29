@@ -1,4 +1,4 @@
-use midgard_core::{LlmConfig, MidgardError, MidgardResult};
+use midgard_core::{LlmApiMode, LlmConfig, MidgardError, MidgardResult};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
@@ -25,6 +25,7 @@ impl MidgardConfig {
             llm: LlmFileConfig {
                 base_url: "https://api.openai.com/v1".to_string(),
                 model: "gpt-4o-mini".to_string(),
+                api_mode: LlmApiMode::default(),
                 api_key: String::new(),
             },
         }
@@ -32,6 +33,7 @@ impl MidgardConfig {
 
     pub fn llm_config(&self) -> LlmConfig {
         LlmConfig::new(self.llm.base_url.clone(), self.llm.model.clone())
+            .with_api_mode(self.llm.api_mode.clone())
     }
 
     pub fn require_database_url(&self) -> MidgardResult<&str> {
@@ -66,6 +68,8 @@ pub struct DatabaseConfig {
 pub struct LlmFileConfig {
     pub base_url: String,
     pub model: String,
+    #[serde(default)]
+    pub api_mode: LlmApiMode,
     pub api_key: String,
 }
 
@@ -243,5 +247,6 @@ mod tests {
 
         assert_eq!(config.llm_config().base_url, "https://api.openai.com/v1");
         assert_eq!(config.llm_config().model, "gpt-4o-mini");
+        assert_eq!(config.llm_config().api_mode, LlmApiMode::ChatCompletions);
     }
 }

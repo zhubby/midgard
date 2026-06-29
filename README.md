@@ -61,7 +61,8 @@ url = ""
 [llm]
 base_url = "https://api.openai.com/v1"
 model = "gpt-4o-mini"
+api_mode = "chat_completions"
 api_key = ""
 ```
 
-Fill `database.url` before starting the server or running migrations. The LLM provider target is OpenAI-compatible; use the same shape for compatible gateways such as DeepSeek, Qwen, or an internal model proxy.
+Fill `database.url` before starting the server or running migrations. The LLM provider target is OpenAI-compatible; use `api_mode = "chat_completions"` by default, or `api_mode = "responses"` for providers that support the Responses API.

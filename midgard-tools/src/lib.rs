@@ -94,6 +94,10 @@ impl ToolRegistry {
         self.tools.values().map(|tool| tool.definition()).collect()
     }
 
+    pub fn definition(&self, name: &str) -> Option<ToolDefinition> {
+        self.tools.get(name).map(|tool| tool.definition())
+    }
+
     pub async fn call(&self, name: &str, arguments: Value) -> MidgardResult<ToolResult> {
         let tool = self
             .tools
