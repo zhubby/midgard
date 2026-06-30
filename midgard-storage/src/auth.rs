@@ -137,7 +137,7 @@ pub fn parse_rfc3339_utc(value: &str) -> MidgardResult<DateTime<Utc>> {
 }
 
 pub fn hash_password(password: &str) -> MidgardResult<String> {
-    if password.as_bytes().len() < MIN_PASSWORD_BYTES {
+    if password.len() < MIN_PASSWORD_BYTES {
         return Err(MidgardError::Configuration(format!(
             "password must be at least {MIN_PASSWORD_BYTES} bytes"
         )));
