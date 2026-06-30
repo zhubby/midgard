@@ -283,11 +283,13 @@ mod tests {
         assert_eq!(loaded.config.server.bind_address, "0.0.0.0:8080");
         assert!(!loaded.config.operator_control.enabled);
         assert_eq!(loaded.config.operator_control.bind_address, "0.0.0.0:8081");
-        assert!(loaded
-            .config
-            .operator_control
-            .registration_tokens
-            .is_empty());
+        assert!(
+            loaded
+                .config
+                .operator_control
+                .registration_tokens
+                .is_empty()
+        );
         assert!(loaded.path.exists());
     }
 

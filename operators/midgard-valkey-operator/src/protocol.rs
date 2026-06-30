@@ -6,20 +6,20 @@ use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use kube::api::{Api, DeleteParams, ListParams};
 use kube::{Client, ResourceExt};
 use midgard_protocol::operator::{
-    operator_control_client::OperatorControlClient, operator_to_server, server_to_operator,
     CapabilityReport, InventorySnapshot, MiddlewareResource, MiddlewareStatus, OperationResult,
     OperationStatus, OperatorCapability, OperatorHeartbeat, OperatorRegistration, OperatorToServer,
-    ServerAck, ServerCommand, ServerToOperator,
+    ServerAck, ServerCommand, ServerToOperator, operator_control_client::OperatorControlClient,
+    operator_to_server, server_to_operator,
 };
 use midgard_protocol::{
-    json_to_struct, struct_to_json, CommandType, DesiredState, OPERATOR_PROTOCOL_VERSION,
+    CommandType, DesiredState, OPERATOR_PROTOCOL_VERSION, json_to_struct, struct_to_json,
 };
 use tokio::sync::mpsc;
 use tokio::time::sleep;
 use tokio_stream::wrappers::ReceiverStream;
+use tonic::Request;
 use tonic::metadata::MetadataValue;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint};
-use tonic::Request;
 use uuid::Uuid;
 
 use crate::api::{ClusterState, ValkeyCluster, ValkeyClusterSpec};
@@ -704,8 +704,10 @@ mod tests {
             (LABEL_WORKSPACE_ID.to_string(), other_workspace_id),
         ]));
 
-        assert!(owned_cluster_to_resource(&cluster, &workspace_id)
-            .unwrap()
-            .is_none());
+        assert!(
+            owned_cluster_to_resource(&cluster, &workspace_id)
+                .unwrap()
+                .is_none()
+        );
     }
 }

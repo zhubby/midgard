@@ -737,9 +737,11 @@ mod tests {
                 end: 5460
             }]
         );
-        assert!(parse_slots_ranges(&["[5461->-abc123]".to_string()])
-            .unwrap()
-            .is_empty());
+        assert!(
+            parse_slots_ranges(&["[5461->-abc123]".to_string()])
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -777,11 +779,13 @@ mod tests {
             ),
             vec![SlotsRange { start: 10, end: 10 }]
         );
-        assert!(subtract_slots_range(
-            SlotsRange { start: 0, end: 10 },
-            SlotsRange { start: 0, end: 10 }
-        )
-        .is_empty());
+        assert!(
+            subtract_slots_range(
+                SlotsRange { start: 0, end: 10 },
+                SlotsRange { start: 0, end: 10 }
+            )
+            .is_empty()
+        );
     }
 
     #[test]

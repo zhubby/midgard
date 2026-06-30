@@ -11,8 +11,8 @@ use uuid::Uuid;
 
 use crate::{
     auth::{
-        normalize_email, parse_rfc3339_utc, utc_now_rfc3339, AuthSession, AuthUser, AuthUserRecord,
-        AuthUserUpdate, NewAuthAuditEvent, NewAuthSession, NewUser,
+        AuthSession, AuthUser, AuthUserRecord, AuthUserUpdate, NewAuthAuditEvent, NewAuthSession,
+        NewUser, normalize_email, parse_rfc3339_utc, utc_now_rfc3339,
     },
     org::{
         MiddlewareInstance, MiddlewareInstanceUpdate, NewMiddlewareInstance, NewOrganization,
@@ -20,9 +20,9 @@ use crate::{
         OrganizationMembership, OrganizationMembershipUpdate, Workspace, WorkspaceUpdate,
     },
     rbac::{
-        builtin_organization_roles, builtin_system_roles, legacy_organization_role_builtin_key,
-        legacy_user_role_builtin_key, NewRbacRole, PermissionKey, RbacRole, RbacRoleUpdate,
-        RbacScopeKind, ORG_OWNER_BUILTIN, SYSTEM_OWNER_BUILTIN,
+        NewRbacRole, ORG_OWNER_BUILTIN, PermissionKey, RbacRole, RbacRoleUpdate, RbacScopeKind,
+        SYSTEM_OWNER_BUILTIN, builtin_organization_roles, builtin_system_roles,
+        legacy_organization_role_builtin_key, legacy_user_role_builtin_key,
     },
     store::{AgentSessionStore, AuthStore, OrganizationStore},
 };
@@ -1542,7 +1542,7 @@ fn require_all_permissions(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::auth::{hash_password, session_token_hash, UserRole};
+    use crate::auth::{UserRole, hash_password, session_token_hash};
     use chrono::{Duration, Utc};
     use midgard_agent::{AgentRole, AgentToolCall, ApprovalStatus};
     use midgard_core::RiskLevel;
@@ -1782,22 +1782,26 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(store
-            .load_user_by_session(&token_hash, now)
-            .await
-            .unwrap()
-            .is_some());
+        assert!(
+            store
+                .load_user_by_session(&token_hash, now)
+                .await
+                .unwrap()
+                .is_some()
+        );
 
         store
             .revoke_auth_session(&token_hash, now.to_rfc3339())
             .await
             .unwrap();
 
-        assert!(store
-            .load_user_by_session(&token_hash, now)
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            store
+                .load_user_by_session(&token_hash, now)
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]

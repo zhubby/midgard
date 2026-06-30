@@ -10,8 +10,8 @@ pub use model::{
     ApprovalDecision, ApprovalRecord, ApprovalStatus, PendingApproval,
 };
 pub use openai::{
-    parse_chat_completion_response, parse_chat_stream_events, parse_responses_response,
-    parse_responses_stream_events, OpenAiCompatibleProvider,
+    OpenAiCompatibleProvider, parse_chat_completion_response, parse_chat_stream_events,
+    parse_responses_response, parse_responses_stream_events,
 };
 pub use provider::{
     LlmProvider, LlmRequest, LlmResponse, LlmStream, LlmStreamEvent, ScriptedLlmProvider,

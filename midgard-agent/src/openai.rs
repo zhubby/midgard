@@ -4,7 +4,7 @@ use futures_util::StreamExt;
 use midgard_core::{LlmApiMode, LlmConfig, MidgardError, MidgardResult};
 use midgard_tools::ToolDefinition;
 use reqwest::Client;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::{
     AgentMessage, AgentRole, AgentToolCall, LlmProvider, LlmRequest, LlmResponse, LlmStream,
@@ -449,22 +449,22 @@ impl StreamState {
                 }
             }
             "response.output_item.added" => {
-                if let Some(item) = value.get("item") {
-                    if item.get("type").and_then(Value::as_str) == Some("function_call") {
-                        let index = self.tool_calls.len();
-                        self.ensure_tool_call(index);
-                        self.tool_calls[index].id = item
-                            .get("call_id")
-                            .or_else(|| item.get("id"))
-                            .and_then(Value::as_str)
-                            .unwrap_or_default()
-                            .to_string();
-                        self.tool_calls[index].name = item
-                            .get("name")
-                            .and_then(Value::as_str)
-                            .unwrap_or_default()
-                            .to_string();
-                    }
+                if let Some(item) = value.get("item")
+                    && item.get("type").and_then(Value::as_str) == Some("function_call")
+                {
+                    let index = self.tool_calls.len();
+                    self.ensure_tool_call(index);
+                    self.tool_calls[index].id = item
+                        .get("call_id")
+                        .or_else(|| item.get("id"))
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string();
+                    self.tool_calls[index].name = item
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string();
                 }
             }
             "response.function_call_arguments.delta" => {
@@ -487,36 +487,36 @@ impl StreamState {
                 self.tool_calls[index].raw_arguments.push_str(delta);
             }
             "response.output_item.done" => {
-                if let Some(item) = value.get("item") {
-                    if item.get("type").and_then(Value::as_str) == Some("function_call") {
-                        let id = item
-                            .get("call_id")
-                            .or_else(|| item.get("id"))
+                if let Some(item) = value.get("item")
+                    && item.get("type").and_then(Value::as_str) == Some("function_call")
+                {
+                    let id = item
+                        .get("call_id")
+                        .or_else(|| item.get("id"))
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    let index = self
+                        .tool_calls
+                        .iter()
+                        .position(|tool_call| tool_call.id == id)
+                        .unwrap_or_else(|| self.tool_calls.len().saturating_sub(1));
+                    self.ensure_tool_call(index);
+                    if self.tool_calls[index].id.is_empty() {
+                        self.tool_calls[index].id = id.to_string();
+                    }
+                    if self.tool_calls[index].name.is_empty() {
+                        self.tool_calls[index].name = item
+                            .get("name")
                             .and_then(Value::as_str)
-                            .unwrap_or_default();
-                        let index = self
-                            .tool_calls
-                            .iter()
-                            .position(|tool_call| tool_call.id == id)
-                            .unwrap_or_else(|| self.tool_calls.len().saturating_sub(1));
-                        self.ensure_tool_call(index);
-                        if self.tool_calls[index].id.is_empty() {
-                            self.tool_calls[index].id = id.to_string();
-                        }
-                        if self.tool_calls[index].name.is_empty() {
-                            self.tool_calls[index].name = item
-                                .get("name")
-                                .and_then(Value::as_str)
-                                .unwrap_or_default()
-                                .to_string();
-                        }
-                        if self.tool_calls[index].raw_arguments.is_empty() {
-                            self.tool_calls[index].raw_arguments = item
-                                .get("arguments")
-                                .and_then(Value::as_str)
-                                .unwrap_or_default()
-                                .to_string();
-                        }
+                            .unwrap_or_default()
+                            .to_string();
+                    }
+                    if self.tool_calls[index].raw_arguments.is_empty() {
+                        self.tool_calls[index].raw_arguments = item
+                            .get("arguments")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string();
                     }
                 }
             }
@@ -564,11 +564,7 @@ fn sse_events(input: &str) -> Vec<String> {
                 .map(str::trim)
                 .collect::<Vec<_>>()
                 .join("\n");
-            if data.is_empty() {
-                None
-            } else {
-                Some(data)
-            }
+            if data.is_empty() { None } else { Some(data) }
         })
         .collect()
 }

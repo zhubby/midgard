@@ -1,16 +1,16 @@
 use std::collections::BTreeMap;
 
-use k8s_openapi::api::core::v1::Secret;
 use k8s_openapi::ByteString;
+use k8s_openapi::api::core::v1::Secret;
 use kube::{Api, ResourceExt};
-use rand::distributions::Alphanumeric;
 use rand::Rng;
+use rand::distributions::Alphanumeric;
 use sha2::{Digest, Sha256};
 
 use crate::api::{UserAclSpec, ValkeyCluster};
 use crate::controller::config::sha256_hex;
 use crate::controller::{
-    apply, cluster_labels, object_meta, owner_reference, ACL_SECRET_TYPE, HASH_ANNOTATION_KEY,
+    ACL_SECRET_TYPE, HASH_ANNOTATION_KEY, apply, cluster_labels, object_meta, owner_reference,
 };
 use crate::error::{Error, Result};
 

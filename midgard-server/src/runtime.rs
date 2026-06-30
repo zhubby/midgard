@@ -1,15 +1,15 @@
 use aes_gcm::{
-    aead::{Aead, KeyInit},
     Aes256Gcm, Nonce,
+    aead::{Aead, KeyInit},
 };
-use base64::{engine::general_purpose::STANDARD_NO_PAD, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD_NO_PAD};
 use http::Uri;
 use midgard_core::{MidgardError, MidgardResult};
 use midgard_storage::{
     DockerRuntimeConfigView, KubernetesRuntimeConfigView, WorkspaceRuntimeConfigRecord,
     WorkspaceRuntimeConfigStatus, WorkspaceRuntimeConfigView, WorkspaceRuntimeMode,
 };
-use rand::{rngs::OsRng, RngCore};
+use rand::{RngCore, rngs::OsRng};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 

@@ -6,4 +6,4 @@ pub mod protocol;
 pub mod runtime;
 pub mod valkey;
 
-pub use runtime::{run, ValkeyOperatorConfig};
+pub use runtime::{ValkeyOperatorConfig, run};

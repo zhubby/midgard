@@ -2,16 +2,16 @@ use anyhow::{Context, Result};
 use clap::{Args as ClapArgs, Parser, Subcommand};
 use midgard_agent::OpenAiCompatibleProvider;
 use midgard_config::{
-    default_config_path, ensure_default_config, load_or_create, OperatorControlConfig,
+    OperatorControlConfig, default_config_path, ensure_default_config, load_or_create,
 };
 use midgard_server::{
-    app_state_with_provider_auth_orgs_credentials_and_operator_registry, app_with_state,
     AuthSettings, OperatorControlService, OperatorRegistrationToken, OperatorRegistry,
     WorkspaceCredentialSettings,
+    app_state_with_provider_auth_orgs_credentials_and_operator_registry, app_with_state,
 };
 use midgard_storage::{
-    connect_database, hash_password, normalize_email, AuthStore, NewAuthAuditEvent, NewUser,
-    PostgresAgentSessionStore, UserRole,
+    AuthStore, NewAuthAuditEvent, NewUser, PostgresAgentSessionStore, UserRole, connect_database,
+    hash_password, normalize_email,
 };
 use std::{
     ffi::OsString,
@@ -508,7 +508,7 @@ fn init_tracing() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use midgard_config::{ensure_default_config, MidgardConfig};
+    use midgard_config::{MidgardConfig, ensure_default_config};
     use std::fs;
     use tempfile::tempdir;
 

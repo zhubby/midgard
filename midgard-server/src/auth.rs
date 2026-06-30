@@ -1,18 +1,18 @@
 use axum::{
+    Json,
     extract::{FromRequestParts, Path, State},
     http::{
+        HeaderMap, HeaderValue, StatusCode,
         header::{COOKIE, SET_COOKIE, USER_AGENT},
         request::Parts,
-        HeaderMap, HeaderValue, StatusCode,
     },
     response::IntoResponse,
-    Json,
 };
 use chrono::{Duration, Utc};
 use midgard_storage::{
-    generate_session_token, hash_password, normalize_email, session_token_hash, verify_password,
     AuthUser, AuthUserUpdate, NewAuthAuditEvent, NewAuthSession, NewUser, PermissionKey, RbacRole,
-    UserRole,
+    UserRole, generate_session_token, hash_password, normalize_email, session_token_hash,
+    verify_password,
 };
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;

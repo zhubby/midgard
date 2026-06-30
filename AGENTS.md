@@ -52,7 +52,7 @@ Frontend commands:
 
 ## Rust Style and Idioms
 
-- The workspace currently targets Rust 2021. Do not switch editions casually.
+- The workspace currently targets Rust 2024. Do not switch editions casually.
 - Use `rustfmt` output: 4-space indentation, formatter-managed trailing commas, and idiomatic import grouping.
 - Prefer concrete `struct` and `enum` types over `serde_json::Value` whenever the shape is known. `Value` is appropriate at tool argument and JSON-schema boundaries.
 - Match on types and enums rather than strings. Convert to strings only at serialization, display, or external protocol boundaries.

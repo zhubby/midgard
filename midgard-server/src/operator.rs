@@ -7,25 +7,25 @@ use std::{
 use futures_util::{Stream, StreamExt};
 use midgard_core::RiskLevel;
 use midgard_protocol::{
-    operator::{
-        operator_control_server::{OperatorControl, OperatorControlServer},
-        operator_to_server, server_to_operator, OperatorRegistration, OperatorToServer, ServerAck,
-        ServerCommand, ServerToOperator,
-    },
     CommandType, MiddlewareResource, MiddlewareStatus, OPERATOR_PROTOCOL_VERSION,
+    operator::{
+        OperatorRegistration, OperatorToServer, ServerAck, ServerCommand, ServerToOperator,
+        operator_control_server::{OperatorControl, OperatorControlServer},
+        operator_to_server, server_to_operator,
+    },
 };
 use midgard_storage::{
     MiddlewareDesiredState, MiddlewareInstanceStatus, MiddlewareInstanceUpdate,
     NewMiddlewareInstance, SharedOrganizationStore,
 };
 use midgard_tools::{Tool, ToolCallContext, ToolDefinition, ToolRegistry, ToolResult};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status, Streaming};
 use uuid::Uuid;
 
-use crate::{publish_middleware_instance_change, storage_app_error, AppError, AppState};
+use crate::{AppError, AppState, publish_middleware_instance_change, storage_app_error};
 
 pub const OPERATOR_TOKEN_METADATA: &str = "x-midgard-operator-token";
 
@@ -174,13 +174,14 @@ impl OperatorRegistry {
             .lock()
             .map_err(|_| Status::internal("operator registry lock poisoned"))?;
 
-        if let Some(current) = state.connections.get(&key) {
-            if current.connected && current.operator_id != registration.operator_id {
-                return Err(Status::already_exists(format!(
-                    "operator already connected for workspace {} and middleware kind {}",
-                    key.workspace_id, key.middleware_kind
-                )));
-            }
+        if let Some(current) = state.connections.get(&key)
+            && current.connected
+            && current.operator_id != registration.operator_id
+        {
+            return Err(Status::already_exists(format!(
+                "operator already connected for workspace {} and middleware kind {}",
+                key.workspace_id, key.middleware_kind
+            )));
         }
 
         state.connections.insert(
@@ -285,13 +286,12 @@ impl OperatorRegistry {
     }
 
     fn disconnect(&self, key: &OperatorKey, connection_id: Uuid) {
-        if let Ok(mut state) = self.inner.lock() {
-            if let Some(connection) = state.connections.get_mut(key) {
-                if connection.connection_id == connection_id {
-                    connection.connected = false;
-                    connection.sender = None;
-                }
-            }
+        if let Ok(mut state) = self.inner.lock()
+            && let Some(connection) = state.connections.get_mut(key)
+            && connection.connection_id == connection_id
+        {
+            connection.connected = false;
+            connection.sender = None;
         }
     }
 }
@@ -1015,8 +1015,8 @@ mod tests {
     };
 
     use crate::{
-        app_state_with_provider_auth_orgs_credentials_and_operator_registry, AuthSettings,
-        WorkspaceCredentialSettings,
+        AuthSettings, WorkspaceCredentialSettings,
+        app_state_with_provider_auth_orgs_credentials_and_operator_registry,
     };
 
     fn registration(operator_id: &str) -> OperatorRegistration {

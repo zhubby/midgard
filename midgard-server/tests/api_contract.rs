@@ -1,23 +1,23 @@
 use axum::{
-    body::{to_bytes, Body},
-    http::{
-        header::{COOKIE, SET_COOKIE},
-        Request, StatusCode,
-    },
     Router,
+    body::{Body, to_bytes},
+    http::{
+        Request, StatusCode,
+        header::{COOKIE, SET_COOKIE},
+    },
 };
 use midgard_agent::{AgentToolCall, LlmProvider, LlmResponse, ScriptedLlmProvider};
 use midgard_server::{
-    app, app_with_provider_auth_orgs_and_credentials, AuthSettings, WorkspaceCredentialSettings,
+    AuthSettings, WorkspaceCredentialSettings, app, app_with_provider_auth_orgs_and_credentials,
 };
 use midgard_storage::{
-    hash_password, AuthStore, MemoryAgentSessionStore, MemoryAuthStore, MemoryOrganizationStore,
-    NewOrganization, NewOrganizationMembership, NewUser, NewWorkspace, OrganizationRole,
-    OrganizationStore, UserRole,
+    AuthStore, MemoryAgentSessionStore, MemoryAuthStore, MemoryOrganizationStore, NewOrganization,
+    NewOrganizationMembership, NewUser, NewWorkspace, OrganizationRole, OrganizationStore,
+    UserRole, hash_password,
 };
 use serde_json::Value;
 use std::sync::Arc;
-use tokio::time::{sleep, Duration};
+use tokio::time::{Duration, sleep};
 use tower::ServiceExt;
 
 const TEST_EMAIL: &str = "operator@example.com";
@@ -823,11 +823,12 @@ async fn tools_endpoint_lists_registered_tools() {
     let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     let json: Value = serde_json::from_slice(&body).unwrap();
 
-    assert!(json
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|tool| tool["name"] == "redis_describe"));
+    assert!(
+        json.as_array()
+            .unwrap()
+            .iter()
+            .any(|tool| tool["name"] == "redis_describe")
+    );
     let tools = json.as_array().unwrap();
     let create_tool = tools
         .iter()

@@ -1,6 +1,6 @@
 use midgard_protocol::{
-    json_to_struct, struct_to_json, DesiredState, MiddlewareResource, MiddlewareStatus,
-    OPERATOR_PROTOCOL_VERSION,
+    DesiredState, MiddlewareResource, MiddlewareStatus, OPERATOR_PROTOCOL_VERSION, json_to_struct,
+    struct_to_json,
 };
 use midgard_storage::{MiddlewareDesiredState, MiddlewareInstance, MiddlewareInstanceStatus};
 use serde_json::json;

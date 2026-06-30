@@ -7,13 +7,13 @@ use midgard_agent::{
     AgentMessage, AgentSession, ApprovalDecision, ApprovalRecord, PendingApproval,
 };
 use midgard_core::{MidgardError, MidgardResult};
-use toasty::{sql, stmt, Db, Executor};
+use toasty::{Db, Executor, sql, stmt};
 use uuid::Uuid;
 
 use crate::{
     auth::{
-        normalize_email, parse_rfc3339_utc, utc_now_rfc3339, AuthSession, AuthUser, AuthUserRecord,
-        AuthUserUpdate, NewAuthAuditEvent, NewAuthSession, NewUser,
+        AuthSession, AuthUser, AuthUserRecord, AuthUserUpdate, NewAuthAuditEvent, NewAuthSession,
+        NewUser, normalize_email, parse_rfc3339_utc, utc_now_rfc3339,
     },
     org::{
         MiddlewareDesiredState, MiddlewareInstance, MiddlewareInstanceStatus,
@@ -23,9 +23,9 @@ use crate::{
         WorkspaceRuntimeConfigStatus, WorkspaceRuntimeConfigView, WorkspaceUpdate,
     },
     rbac::{
-        builtin_organization_roles, legacy_organization_role_builtin_key,
-        legacy_user_role_builtin_key, NewRbacRole, PermissionKey, RbacRole, RbacRoleUpdate,
-        RbacScopeKind, ORG_OWNER_BUILTIN, SYSTEM_OWNER_BUILTIN,
+        NewRbacRole, ORG_OWNER_BUILTIN, PermissionKey, RbacRole, RbacRoleUpdate, RbacScopeKind,
+        SYSTEM_OWNER_BUILTIN, builtin_organization_roles, legacy_organization_role_builtin_key,
+        legacy_user_role_builtin_key,
     },
     store::{AgentSessionStore, AuthStore, OrganizationStore},
 };
@@ -38,10 +38,10 @@ use codec::{
 };
 
 pub use models::{
-    storage_models, StoredAgentApprovalRecord, StoredAgentMessage, StoredAgentSession,
-    StoredAuthAuditEvent, StoredAuthSession, StoredAuthUser, StoredMiddlewareInstance,
-    StoredOrganization, StoredOrganizationMembership, StoredRbacRole, StoredRbacRolePermission,
-    StoredWorkspace,
+    StoredAgentApprovalRecord, StoredAgentMessage, StoredAgentSession, StoredAuthAuditEvent,
+    StoredAuthSession, StoredAuthUser, StoredMiddlewareInstance, StoredOrganization,
+    StoredOrganizationMembership, StoredRbacRole, StoredRbacRolePermission, StoredWorkspace,
+    storage_models,
 };
 
 #[derive(Clone)]
@@ -165,10 +165,10 @@ impl AgentSessionStore for PostgresAgentSessionStore {
         let mut tx = db.transaction().await.map_err(storage_error)?;
 
         upsert_session(&mut tx, workspace_id, &session).await?;
-        if let Some(approval) = &session.pending_approval {
-            if approval.approved.is_none() {
-                upsert_pending_approval_record(&mut tx, session.id, approval).await?;
-            }
+        if let Some(approval) = &session.pending_approval
+            && approval.approved.is_none()
+        {
+            upsert_pending_approval_record(&mut tx, session.id, approval).await?;
         }
         sql::statement("DELETE FROM agent_messages WHERE session_id = $1")
             .bind(session.id)

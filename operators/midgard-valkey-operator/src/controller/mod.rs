@@ -10,8 +10,8 @@ use std::fmt::Debug;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{Condition, ObjectMeta, OwnerReference, Time};
 use kube::api::{Api, Patch, PatchParams, Resource};
 use kube::{Client, ResourceExt};
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::api::{ValkeyCluster, ValkeyNode};

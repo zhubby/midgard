@@ -3,21 +3,21 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::routing::get;
 use axum::Router;
+use axum::routing::get;
 use futures_util::StreamExt;
 use k8s_openapi::api::apps::v1::{Deployment, StatefulSet};
 use k8s_openapi::api::core::v1::{ConfigMap, PersistentVolumeClaim, Secret, Service};
 use k8s_openapi::api::policy::v1::PodDisruptionBudget;
+use kube::Client;
 use kube::api::Api;
 use kube::core::NamespaceResourceScope;
-use kube::runtime::{watcher, Controller};
-use kube::Client;
+use kube::runtime::{Controller, watcher};
 use tokio::time::sleep;
 use uuid::Uuid;
 
 use crate::api::{ValkeyCluster, ValkeyNode};
-use crate::controller::{cluster, node, Context};
+use crate::controller::{Context, cluster, node};
 use crate::error::{Error, Result};
 use crate::lease::{LeaseConfig, LeaseGuard};
 use crate::protocol;

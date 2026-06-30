@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use midgard_storage::{MiddlewareDesiredState, MiddlewareInstance, MiddlewareInstanceStatus};
-use prost_types::{value::Kind, ListValue, NullValue, Struct, Value as ProstValue};
+use prost_types::{ListValue, NullValue, Struct, Value as ProstValue, value::Kind};
 use serde_json::{Map, Number, Value};
 use uuid::Uuid;
 
@@ -14,9 +14,9 @@ pub mod operator {
 pub const OPERATOR_PROTOCOL_VERSION: u32 = 1;
 
 pub use operator::{
-    operator_control_client, operator_control_server, CommandType, DesiredState,
-    MiddlewareResource, MiddlewareStatus, OperatorRegistration, OperatorToServer, ServerCommand,
-    ServerToOperator,
+    CommandType, DesiredState, MiddlewareResource, MiddlewareStatus, OperatorRegistration,
+    OperatorToServer, ServerCommand, ServerToOperator, operator_control_client,
+    operator_control_server,
 };
 
 impl From<&MiddlewareDesiredState> for DesiredState {
@@ -170,11 +170,7 @@ fn prost_value_to_json(value: ProstValue) -> Value {
 }
 
 fn empty_string_to_none(value: String) -> Option<String> {
-    if value.is_empty() {
-        None
-    } else {
-        Some(value)
-    }
+    if value.is_empty() { None } else { Some(value) }
 }
 
 fn json_number_from_f64(value: f64) -> Value {

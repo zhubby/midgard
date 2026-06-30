@@ -4,7 +4,7 @@ use midgard_controller::{
 };
 use midgard_core::{CapabilityDescriptor, RiskLevel};
 use midgard_tools::{Tool, ToolDefinition, ToolRegistry, ToolResult};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub struct ExampleRedisPlugin;
 

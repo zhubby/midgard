@@ -2,15 +2,15 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use midgard_agent::{
+    AgentMessage, AgentRole, AgentRunStatus, AgentRunner, AgentSession, AgentToolCall,
+    ApprovalDecision, ApprovalRecord, ApprovalStatus, CompleteTaskTool, LlmRequest, LlmResponse,
+    LlmStreamEvent, OpenAiCompatibleProvider, PendingApproval, ScriptedLlmProvider,
     parse_chat_completion_response, parse_chat_stream_events, parse_responses_response,
-    parse_responses_stream_events, AgentMessage, AgentRole, AgentRunStatus, AgentRunner,
-    AgentSession, AgentToolCall, ApprovalDecision, ApprovalRecord, ApprovalStatus,
-    CompleteTaskTool, LlmRequest, LlmResponse, LlmStreamEvent, OpenAiCompatibleProvider,
-    PendingApproval, ScriptedLlmProvider,
+    parse_responses_stream_events,
 };
 use midgard_core::{CompletionStatus, LlmApiMode, LlmConfig, RiskLevel};
 use midgard_tools::{Tool, ToolDefinition, ToolRegistry, ToolResult};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 #[test]
 fn provider_builds_openai_compatible_chat_completions_url() {
@@ -206,9 +206,11 @@ fn chat_stream_parser_aggregates_tool_arguments() {
 
     let events = parse_chat_stream_events(input).unwrap();
 
-    assert!(events
-        .iter()
-        .any(|event| matches!(event, LlmStreamEvent::ContentDelta(delta) if delta == "hi ")));
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, LlmStreamEvent::ContentDelta(delta) if delta == "hi "))
+    );
     assert!(events.iter().any(|event| {
         matches!(event, LlmStreamEvent::ToolCallDone(call) if call.arguments["namespace"] == "default")
     }));
@@ -250,13 +252,15 @@ async fn react_loop_stops_when_complete_task_returns_complete() {
         .unwrap();
 
     assert_eq!(result.session.status, AgentRunStatus::Completed);
-    assert!(result
-        .session
-        .messages
-        .last()
-        .unwrap()
-        .content
-        .contains("Redis is healthy"));
+    assert!(
+        result
+            .session
+            .messages
+            .last()
+            .unwrap()
+            .content
+            .contains("Redis is healthy")
+    );
 }
 
 #[tokio::test]
@@ -277,11 +281,13 @@ async fn react_loop_returns_tool_errors_for_unknown_tools() {
         .unwrap();
 
     assert_eq!(result.session.status, AgentRunStatus::Responded);
-    assert!(result
-        .session
-        .messages
-        .iter()
-        .any(|message| message.content.contains("tool not found")));
+    assert!(
+        result
+            .session
+            .messages
+            .iter()
+            .any(|message| message.content.contains("tool not found"))
+    );
 }
 
 #[tokio::test]
@@ -303,11 +309,13 @@ async fn react_loop_reports_invalid_arguments_as_tool_result() {
         .unwrap();
 
     assert_eq!(result.session.status, AgentRunStatus::Responded);
-    assert!(result
-        .session
-        .last_error
-        .unwrap()
-        .contains("invalid arguments"));
+    assert!(
+        result
+            .session
+            .last_error
+            .unwrap()
+            .contains("invalid arguments")
+    );
 }
 
 #[tokio::test]
@@ -349,11 +357,13 @@ async fn high_risk_tool_pauses_for_approval_and_resumes() {
     let second = runner.run(session).await.unwrap();
 
     assert_eq!(second.session.status, AgentRunStatus::Completed);
-    assert!(second
-        .session
-        .messages
-        .iter()
-        .any(|message| message.content.contains("restart requested")));
+    assert!(
+        second
+            .session
+            .messages
+            .iter()
+            .any(|message| message.content.contains("restart requested"))
+    );
 }
 
 struct EchoTool;

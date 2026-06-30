@@ -1,16 +1,16 @@
 use axum::{
+    Json, Router,
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{
-        sse::{Event, Sse},
         IntoResponse,
+        sse::{Event, Sse},
     },
     routing::{get, patch, post},
-    Json, Router,
 };
 use http::{
-    header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE},
     HeaderName, HeaderValue, Method,
+    header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE},
 };
 use midgard_agent::{
     AgentRunEvent, AgentRunStatus, AgentRunner, AgentSession, ApprovalDecision, ApprovalRecord,
@@ -19,13 +19,13 @@ use midgard_agent::{
 use midgard_controller::{MiddlewareController, MiddlewarePlugin};
 use midgard_plugin_example::ExampleRedisPlugin;
 use midgard_storage::{
-    permission_catalog, MemoryAgentSessionStore, MemoryAuthStore, MemoryOrganizationStore,
-    MiddlewareDesiredState, MiddlewareInstance, MiddlewareInstanceStatus, MiddlewareInstanceUpdate,
-    NewMiddlewareInstance, NewOrganization, NewOrganizationMembership, NewRbacRole, NewWorkspace,
-    Organization, OrganizationContext, OrganizationMembership, OrganizationMembershipUpdate,
-    OrganizationRole, PermissionCatalogItem, PermissionKey, RbacRole, RbacRoleUpdate,
-    RbacScopeKind, SharedAgentSessionStore, SharedAuthStore, SharedOrganizationStore, Workspace,
-    WorkspaceRuntimeConfigStatus, WorkspaceRuntimeMode, WorkspaceUpdate,
+    MemoryAgentSessionStore, MemoryAuthStore, MemoryOrganizationStore, MiddlewareDesiredState,
+    MiddlewareInstance, MiddlewareInstanceStatus, MiddlewareInstanceUpdate, NewMiddlewareInstance,
+    NewOrganization, NewOrganizationMembership, NewRbacRole, NewWorkspace, Organization,
+    OrganizationContext, OrganizationMembership, OrganizationMembershipUpdate, OrganizationRole,
+    PermissionCatalogItem, PermissionKey, RbacRole, RbacRoleUpdate, RbacScopeKind,
+    SharedAgentSessionStore, SharedAuthStore, SharedOrganizationStore, Workspace,
+    WorkspaceRuntimeConfigStatus, WorkspaceRuntimeMode, WorkspaceUpdate, permission_catalog,
 };
 use midgard_tools::{ToolDefinition, ToolRegistry};
 use serde::{Deserialize, Serialize};
@@ -45,14 +45,14 @@ pub use auth::{
     UpdateAuthUserRequest,
 };
 pub use operator::{
-    OperatorConnectionSnapshot, OperatorControlService, OperatorDispatchOutcome,
-    OperatorRegistrationToken, OperatorRegistry, OPERATOR_TOKEN_METADATA,
+    OPERATOR_TOKEN_METADATA, OperatorConnectionSnapshot, OperatorControlService,
+    OperatorDispatchOutcome, OperatorRegistrationToken, OperatorRegistry,
 };
 pub use runtime::WorkspaceCredentialSettings;
 pub use workspace::{
-    agent_run_event_payload, DashboardTone, MiddlewareDashboardState, MiddlewareMetric,
-    MiddlewareTimelineEvent, MiddlewareWorkload, WorkspaceEvent, WorkspaceEventBus,
-    WorkspaceEventPayload, WorkspaceEventType, WorkspaceSnapshot, WORKSPACE_PROTOCOL_VERSION,
+    DashboardTone, MiddlewareDashboardState, MiddlewareMetric, MiddlewareTimelineEvent,
+    MiddlewareWorkload, WORKSPACE_PROTOCOL_VERSION, WorkspaceEvent, WorkspaceEventBus,
+    WorkspaceEventPayload, WorkspaceEventType, WorkspaceSnapshot, agent_run_event_payload,
 };
 
 #[derive(Clone)]

@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use midgard_core::{CompletionStatus, RiskLevel};
 use midgard_tools::{Tool, ToolDefinition, ToolResult};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub struct CompleteTaskTool;
 

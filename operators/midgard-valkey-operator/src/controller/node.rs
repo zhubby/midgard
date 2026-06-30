@@ -3,26 +3,26 @@ use std::time::Duration;
 
 use k8s_openapi::api::apps::v1::{Deployment, StatefulSet};
 use k8s_openapi::api::core::v1::{PersistentVolumeClaim, Pod};
+use kube::ResourceExt;
 use kube::api::{Api, ListParams, Patch, PatchParams};
 use kube::runtime::controller::Action;
-use kube::ResourceExt;
 use serde_json::json;
 use tracing::{debug, warn};
 
 use crate::api::{
-    PersistenceReclaimPolicy, ValkeyNode, ValkeyNodeStatus, WorkloadType,
-    VALKEY_NODE_CONDITION_LIVE_CONFIG_APPLIED, VALKEY_NODE_CONDITION_PVC_READY,
-    VALKEY_NODE_CONDITION_PVC_SIZE_READY, VALKEY_NODE_CONDITION_READY,
+    PersistenceReclaimPolicy, VALKEY_NODE_CONDITION_LIVE_CONFIG_APPLIED,
+    VALKEY_NODE_CONDITION_PVC_READY, VALKEY_NODE_CONDITION_PVC_SIZE_READY,
+    VALKEY_NODE_CONDITION_READY, ValkeyNode, ValkeyNodeStatus, WorkloadType,
 };
 use crate::controller::config::live_config_to_apply;
 use crate::controller::resources::{
     delete_workload, ensure_node_config_map, ensure_pvc, ensure_workload,
 };
-use crate::controller::users::{fetch_system_user_password, OPERATOR_USER};
+use crate::controller::users::{OPERATOR_USER, fetch_system_user_password};
 use crate::controller::{
+    Context, DEFAULT_PORT, LABEL_CLUSTER, ROLE_MASTER, ROLE_PRIMARY, ROLE_REPLICA, ROLE_SLAVE,
     find_condition, label_selector, patch_status, remove_condition, set_condition,
-    valkey_node_labels, valkey_node_pvc_name, valkey_node_resource_name, Context, DEFAULT_PORT,
-    LABEL_CLUSTER, ROLE_MASTER, ROLE_PRIMARY, ROLE_REPLICA, ROLE_SLAVE,
+    valkey_node_labels, valkey_node_pvc_name, valkey_node_resource_name,
 };
 use crate::error::Result;
 use crate::valkey::ValkeyClient;

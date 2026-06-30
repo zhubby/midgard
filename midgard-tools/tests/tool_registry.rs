@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use midgard_core::RiskLevel;
 use midgard_tools::{Tool, ToolDefinition, ToolRegistry, ToolResult};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 struct EchoTool;
 

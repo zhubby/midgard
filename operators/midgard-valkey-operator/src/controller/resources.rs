@@ -20,15 +20,15 @@ use serde_json::Value;
 use crate::api::{ExporterSpec, PdbPolicy, TlsConfig, ValkeyCluster, ValkeyNode, WorkloadType};
 use crate::controller::config::build_node_config_map;
 use crate::controller::users::{
-    internal_acl_secret_name, system_password_secret_name, EXPORTER_USER,
+    EXPORTER_USER, internal_acl_secret_name, system_password_secret_name,
 };
 use crate::controller::{
-    apply, cluster_labels, headless_service_name, object_meta, owner_reference,
-    server_config_map_name, valkey_node_labels, valkey_node_pvc_name, valkey_node_resource_name,
     CONFIG_HASH_KEY, DATA_MOUNT_PATH, DATA_VOLUME_NAME, DEFAULT_CLUSTER_BUS_PORT,
     DEFAULT_EXPORTER_IMAGE, DEFAULT_EXPORTER_PORT, DEFAULT_IMAGE, DEFAULT_PORT, LABEL_CLUSTER,
     LABEL_NODE_INDEX, LABEL_SHARD_INDEX, TLS_CERT_MOUNT_PATH, TLS_SECRET_KEY_CA,
-    TLS_SECRET_KEY_CERT, TLS_SECRET_KEY_KEY, TLS_VOLUME_NAME,
+    TLS_SECRET_KEY_CERT, TLS_SECRET_KEY_KEY, TLS_VOLUME_NAME, apply, cluster_labels,
+    headless_service_name, object_meta, owner_reference, server_config_map_name,
+    valkey_node_labels, valkey_node_pvc_name, valkey_node_resource_name,
 };
 use crate::error::Result;
 
@@ -341,17 +341,17 @@ fn build_pod_template(
                 });
         }
     }
-    if let Some(tls) = &node.spec.tls {
-        if let Some(secret_name) = tls_secret_name(tls) {
-            volumes.push(Volume {
-                name: TLS_VOLUME_NAME.to_string(),
-                secret: Some(SecretVolumeSource {
-                    secret_name: Some(secret_name),
-                    ..SecretVolumeSource::default()
-                }),
-                ..Volume::default()
-            });
-        }
+    if let Some(tls) = &node.spec.tls
+        && let Some(secret_name) = tls_secret_name(tls)
+    {
+        volumes.push(Volume {
+            name: TLS_VOLUME_NAME.to_string(),
+            secret: Some(SecretVolumeSource {
+                secret_name: Some(secret_name),
+                ..SecretVolumeSource::default()
+            }),
+            ..Volume::default()
+        });
     }
     if node.spec.persistence.is_some() {
         volumes.push(Volume {

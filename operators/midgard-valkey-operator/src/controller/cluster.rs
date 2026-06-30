@@ -2,23 +2,23 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use k8s_openapi::api::core::v1::Pod;
+use kube::ResourceExt;
 use kube::api::{Api, ListParams};
 use kube::runtime::controller::Action;
-use kube::ResourceExt;
 use tracing::{debug, warn};
 
 use crate::api::{
-    ClusterState as ApiClusterState, ValkeyCluster, ValkeyClusterStatus, ValkeyNode,
     CONDITION_CLUSTER_FORMED, CONDITION_DEGRADED, CONDITION_PROGRESSING, CONDITION_READY,
-    CONDITION_SLOTS_ASSIGNED, VALKEY_NODE_CONDITION_LIVE_CONFIG_APPLIED,
+    CONDITION_SLOTS_ASSIGNED, ClusterState as ApiClusterState,
+    VALKEY_NODE_CONDITION_LIVE_CONFIG_APPLIED, ValkeyCluster, ValkeyClusterStatus, ValkeyNode,
 };
 use crate::controller::config::{server_config_roll_hash, upsert_cluster_config_map};
 use crate::controller::resources::{build_cluster_valkey_node, reconcile_pdb, upsert_service};
-use crate::controller::users::{fetch_system_user_password, reconcile_users_acl, OPERATOR_USER};
+use crate::controller::users::{OPERATOR_USER, fetch_system_user_password, reconcile_users_acl};
 use crate::controller::{
-    apply, find_condition, label_selector, node_role_and_shard, patch_status, remove_condition,
-    remove_condition_if_reason, set_condition, Context, DEFAULT_PORT, LABEL_CLUSTER,
-    LABEL_NODE_INDEX, LABEL_SHARD_INDEX, ROLE_PRIMARY,
+    Context, DEFAULT_PORT, LABEL_CLUSTER, LABEL_NODE_INDEX, LABEL_SHARD_INDEX, ROLE_PRIMARY, apply,
+    find_condition, label_selector, node_role_and_shard, patch_status, remove_condition,
+    remove_condition_if_reason, set_condition,
 };
 use crate::error::{Error, Result};
 use crate::valkey::{self, ClusterState, NodeState, ShardState, SlotsRange};
@@ -748,10 +748,10 @@ fn find_shard_primary(
             if valkey::count_slots(&shard.slots) == 0 {
                 continue;
             }
-            if let Some(primary) = shard.primary() {
-                if primary.address == pod_ip {
-                    return (primary.id.clone(), pod_ip);
-                }
+            if let Some(primary) = shard.primary()
+                && primary.address == pod_ip
+            {
+                return (primary.id.clone(), pod_ip);
             }
         }
     }
