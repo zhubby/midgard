@@ -102,6 +102,16 @@ pub struct LogoutResponse {
 pub(crate) struct AuthenticatedUser(pub AuthUser);
 
 impl AuthenticatedUser {
+    pub(crate) fn require_operator(&self) -> Result<(), AppError> {
+        if self.0.role.can_operate() {
+            return Ok(());
+        }
+
+        Err(AppError::Forbidden(
+            "operator or admin role is required".to_string(),
+        ))
+    }
+
     pub(crate) fn require_admin(&self) -> Result<(), AppError> {
         if self.0.role.can_manage_users() {
             return Ok(());

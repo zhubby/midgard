@@ -133,8 +133,8 @@ pub struct StoredWorkspace {
     pub name: String,
     pub archived_at: Option<String>,
     pub created_at: String,
-    pub updated_at: String,
-}
+    pub updated_at: String,}
+
 
 pub fn storage_models() -> toasty::ModelSet {
     toasty::models!(
