@@ -2,7 +2,7 @@
 
 import { type ReactNode, useEffect, useState } from "react";
 import { LoginPage } from "@/components/LoginPage";
-import { fetchCurrentUser, login, logout } from "@/lib/api";
+import { fetchCurrentUser, login, logout, register } from "@/lib/api";
 import type { AuthContext, AuthUser } from "@/lib/types";
 
 type AuthState =
@@ -80,6 +80,36 @@ export function AuthGate({ children }: AuthGateProps) {
     }
   }
 
+  async function handleRegister(
+    displayName: string,
+    email: string,
+    password: string,
+  ) {
+    if (busy) return;
+    setBusy(true);
+    setAuth({ status: "anonymous", auth: null, error: null });
+
+    try {
+      const user = await register({
+        email,
+        password,
+        display_name: displayName.trim() || null,
+      });
+      setAuth({ status: "authenticated", auth: user, error: null });
+    } catch (caught) {
+      setAuth({
+        status: "anonymous",
+        auth: null,
+        error:
+          caught instanceof Error
+            ? registrationErrorMessage(caught.message)
+            : "Unable to create account.",
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function handleLogout() {
     setBusy(true);
     try {
@@ -119,5 +149,26 @@ export function AuthGate({ children }: AuthGateProps) {
     );
   }
 
-  return <LoginPage busy={busy} error={auth.error} onSubmit={handleLogin} />;
+  return (
+    <LoginPage
+      busy={busy}
+      error={auth.error}
+      onLogin={handleLogin}
+      onRegister={handleRegister}
+    />
+  );
+}
+
+function registrationErrorMessage(message: string) {
+  if (message.includes("already exists")) {
+    return "An account already exists for that email.";
+  }
+  if (message.includes("password must")) {
+    return "Password must be at least 8 characters.";
+  }
+  if (message.includes("email is required")) {
+    return "Email is required.";
+  }
+
+  return "Unable to create account.";
 }

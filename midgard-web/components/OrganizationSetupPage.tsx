@@ -2,17 +2,20 @@
 
 import { type FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
+import { NoWorkspaceAccess } from "@/components/NoWorkspaceAccess";
 import { createOrganization } from "@/lib/api";
 import type { AuthUser, WorkspaceRuntimeMode } from "@/lib/types";
 
 interface OrganizationSetupPageProps {
   busyAuth: boolean;
+  canCreateOrganization: boolean;
   user: AuthUser;
   onLogout: () => void;
 }
 
 export function OrganizationSetupPage({
   busyAuth,
+  canCreateOrganization,
   user,
   onLogout,
 }: OrganizationSetupPageProps) {
@@ -65,6 +68,16 @@ export function OrganizationSetupPage({
     } finally {
       setBusy(false);
     }
+  }
+
+  if (!canCreateOrganization) {
+    return (
+      <NoWorkspaceAccess
+        busyAuth={busyAuth}
+        user={user}
+        onLogout={onLogout}
+      />
+    );
   }
 
   return (

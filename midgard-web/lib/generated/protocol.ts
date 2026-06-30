@@ -45,6 +45,8 @@ export type AuthContext = { user: AuthUser, system_role: RbacRole, system_permis
 
 export type LoginRequest = { email: string, password: string, };
 
+export type RegisterRequest = { email: string, password: string, display_name: string | null, };
+
 export type CreateAuthUserRequest = { email: string, password: string, display_name: string | null, role: UserRole | null, system_role_id: string | null, active: boolean, };
 
 export type UpdateAuthUserRequest = { password: string | null, display_name: string | null, role: UserRole | null, system_role_id: string | null, active: boolean | null, };

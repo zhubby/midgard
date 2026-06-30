@@ -7,7 +7,7 @@ use midgard_agent::{
     AgentMessage, AgentSession, ApprovalDecision, ApprovalRecord, PendingApproval,
 };
 use midgard_core::{MidgardError, MidgardResult};
-use toasty::{Db, Executor, sql, stmt};
+use toasty::{Db, Executor, schema::db, sql, stmt};
 use uuid::Uuid;
 
 use crate::{
@@ -44,6 +44,58 @@ pub use models::{
     StoredOrganizationMembership, StoredRbacRole, StoredRbacRolePermission, StoredWorkspace,
     storage_models,
 };
+
+trait BindOptionalExt: Sized {
+    fn bind_optional_bool(self, value: Option<bool>) -> Self;
+    fn bind_optional_text(self, value: Option<String>) -> Self;
+    fn bind_optional_uuid(self, value: Option<Uuid>) -> Self;
+}
+
+impl BindOptionalExt for sql::Statement {
+    fn bind_optional_bool(self, value: Option<bool>) -> Self {
+        match value {
+            Some(value) => self.bind(value),
+            None => self.bind_typed(stmt::Value::Null, db::Type::Boolean),
+        }
+    }
+
+    fn bind_optional_text(self, value: Option<String>) -> Self {
+        match value {
+            Some(value) => self.bind(value),
+            None => self.bind_typed(stmt::Value::Null, db::Type::Text),
+        }
+    }
+
+    fn bind_optional_uuid(self, value: Option<Uuid>) -> Self {
+        match value {
+            Some(value) => self.bind(value),
+            None => self.bind_typed(stmt::Value::Null, db::Type::Uuid),
+        }
+    }
+}
+
+impl BindOptionalExt for sql::Query {
+    fn bind_optional_bool(self, value: Option<bool>) -> Self {
+        match value {
+            Some(value) => self.bind(value),
+            None => self.bind_typed(stmt::Value::Null, db::Type::Boolean),
+        }
+    }
+
+    fn bind_optional_text(self, value: Option<String>) -> Self {
+        match value {
+            Some(value) => self.bind(value),
+            None => self.bind_typed(stmt::Value::Null, db::Type::Text),
+        }
+    }
+
+    fn bind_optional_uuid(self, value: Option<Uuid>) -> Self {
+        match value {
+            Some(value) => self.bind(value),
+            None => self.bind_typed(stmt::Value::Null, db::Type::Uuid),
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct PostgresAgentSessionStore {
@@ -278,7 +330,7 @@ impl AuthStore for PostgresAgentSessionStore {
         .bind(auth_user.active)
         .bind(auth_user.created_at.clone())
         .bind(auth_user.updated_at.clone())
-        .bind(auth_user.last_login_at.clone())
+        .bind_optional_text(auth_user.last_login_at.clone())
         .exec(&mut db)
         .await
         .map_err(storage_error)?;
@@ -390,11 +442,11 @@ impl AuthStore for PostgresAgentSessionStore {
              WHERE id = $1",
         )
         .bind(id)
-        .bind(update.display_name.map(|value| value.trim().to_string()))
-        .bind(update.role.map(|role| role.as_str().to_string()))
+        .bind_optional_text(update.display_name.map(|value| value.trim().to_string()))
+        .bind_optional_text(update.role.map(|role| role.as_str().to_string()))
         .bind(next_system_role_id)
-        .bind(update.password_hash)
-        .bind(update.active)
+        .bind_optional_text(update.password_hash)
+        .bind_optional_bool(update.active)
         .bind(updated_at)
         .exec(&mut db)
         .await
@@ -427,9 +479,9 @@ impl AuthStore for PostgresAgentSessionStore {
         .bind(auth_session.token_hash.clone())
         .bind(auth_session.created_at.clone())
         .bind(auth_session.expires_at.clone())
-        .bind(auth_session.revoked_at.clone())
-        .bind(auth_session.user_agent.clone())
-        .bind(auth_session.ip_address.clone())
+        .bind_optional_text(auth_session.revoked_at.clone())
+        .bind_optional_text(auth_session.user_agent.clone())
+        .bind_optional_text(auth_session.ip_address.clone())
         .exec(&mut tx)
         .await
         .map_err(storage_error)?;
@@ -520,13 +572,13 @@ impl AuthStore for PostgresAgentSessionStore {
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
         )
         .bind(Uuid::new_v4())
-        .bind(event.user_id)
+        .bind_optional_uuid(event.user_id)
         .bind(event.event_type)
-        .bind(event.email_lower)
+        .bind_optional_text(event.email_lower)
         .bind(event.occurred_at)
-        .bind(event.ip_address)
-        .bind(event.user_agent)
-        .bind(event.detail_json)
+        .bind_optional_text(event.ip_address)
+        .bind_optional_text(event.user_agent)
+        .bind_optional_text(event.detail_json)
         .exec(&mut db)
         .await
         .map_err(storage_error)?;
@@ -610,7 +662,7 @@ impl OrganizationStore for PostgresAgentSessionStore {
         .bind(created.slug.clone())
         .bind(created.name.clone())
         .bind(created.created_by_user_id)
-        .bind(created.archived_at.clone())
+        .bind_optional_text(created.archived_at.clone())
         .bind(created.created_at.clone())
         .bind(created.updated_at.clone())
         .exec(&mut db)
@@ -908,18 +960,18 @@ impl OrganizationStore for PostgresAgentSessionStore {
         .bind(created.organization_id)
         .bind(created.slug.clone())
         .bind(created.name.clone())
-        .bind(
+        .bind_optional_text(
             created
                 .runtime_config
                 .mode
                 .as_ref()
                 .map(|mode| mode.as_str().to_string()),
         )
-        .bind(runtime_config_ciphertext)
+        .bind_optional_text(runtime_config_ciphertext)
         .bind(runtime_config_summary_json)
         .bind(created.runtime_config.status.as_str())
-        .bind(created.runtime_config.updated_at.clone())
-        .bind(created.archived_at.clone())
+        .bind_optional_text(created.runtime_config.updated_at.clone())
+        .bind_optional_text(created.archived_at.clone())
         .bind(created.created_at.clone())
         .bind(created.updated_at.clone())
         .exec(&mut db)
@@ -1073,18 +1125,18 @@ impl OrganizationStore for PostgresAgentSessionStore {
         .bind(organization_id)
         .bind(workspace.slug.clone())
         .bind(workspace.name.clone())
-        .bind(
+        .bind_optional_text(
             workspace
                 .runtime_config
                 .mode
                 .as_ref()
                 .map(|mode| mode.as_str().to_string()),
         )
-        .bind(runtime_config_ciphertext)
-        .bind(runtime_config_summary_json)
+        .bind_optional_text(runtime_config_ciphertext)
+        .bind_optional_text(runtime_config_summary_json)
         .bind(workspace.runtime_config.status.as_str())
-        .bind(workspace.runtime_config.updated_at.clone())
-        .bind(workspace.archived_at.clone())
+        .bind_optional_text(workspace.runtime_config.updated_at.clone())
+        .bind_optional_text(workspace.archived_at.clone())
         .bind(workspace.updated_at.clone())
         .exec(&mut db)
         .await
@@ -1187,7 +1239,7 @@ impl OrganizationStore for PostgresAgentSessionStore {
         .bind(created.desired_state.as_str())
         .bind(created.status.as_str())
         .bind(json_string(&created.config)?)
-        .bind(created.archived_at.clone())
+        .bind_optional_text(created.archived_at.clone())
         .bind(created.created_at.clone())
         .bind(created.updated_at.clone())
         .exec(&mut db)
@@ -1245,7 +1297,7 @@ impl OrganizationStore for PostgresAgentSessionStore {
         .bind(instance.desired_state.as_str())
         .bind(instance.status.as_str())
         .bind(json_string(&instance.config)?)
-        .bind(instance.archived_at.clone())
+        .bind_optional_text(instance.archived_at.clone())
         .bind(instance.updated_at.clone())
         .exec(&mut db)
         .await
@@ -1786,8 +1838,8 @@ async fn update_role(
     )
     .bind(role.id)
     .bind(role.name.clone())
-    .bind(role.description.clone())
-    .bind(role.archived_at.clone())
+    .bind_optional_text(role.description.clone())
+    .bind_optional_text(role.archived_at.clone())
     .bind(role.updated_at.clone())
     .exec(&mut db)
     .await
@@ -1880,13 +1932,13 @@ async fn insert_role(store: &PostgresAgentSessionStore, role: &RbacRole) -> Midg
     )
     .bind(role.id)
     .bind(role.scope_kind.as_str())
-    .bind(role.organization_id)
+    .bind_optional_uuid(role.organization_id)
     .bind(role.slug.clone())
     .bind(role.name.clone())
-    .bind(role.description.clone())
-    .bind(role.builtin_key.clone())
+    .bind_optional_text(role.description.clone())
+    .bind_optional_text(role.builtin_key.clone())
     .bind(role.protected)
-    .bind(role.archived_at.clone())
+    .bind_optional_text(role.archived_at.clone())
     .bind(role.created_at.clone())
     .bind(role.updated_at.clone())
     .exec(&mut db)
@@ -2161,8 +2213,8 @@ async fn upsert_session(
     .bind(workspace_id)
     .bind(session.iteration_count as i64)
     .bind(status_to_storage(&session.status))
-    .bind(optional_json(&session.pending_approval)?)
-    .bind(session.last_error.clone())
+    .bind_optional_text(optional_json(&session.pending_approval)?)
+    .bind_optional_text(session.last_error.clone())
     .exec(executor)
     .await
     .map_err(storage_error)?;
@@ -2184,8 +2236,8 @@ async fn insert_message(
     .bind(sequence)
     .bind(role_to_storage(&message.role))
     .bind(message.content.clone())
-    .bind(optional_tool_calls_json(&message.tool_calls)?)
-    .bind(message.tool_call_id.clone())
+    .bind_optional_text(optional_tool_calls_json(&message.tool_calls)?)
+    .bind_optional_text(message.tool_call_id.clone())
     .exec(executor)
     .await
     .map_err(storage_error)?;
@@ -2211,9 +2263,9 @@ async fn upsert_pending_approval_record(
     .bind(risk_level_to_storage(&record.risk_level))
     .bind(record.status.as_str())
     .bind(record.requested_at)
-    .bind(record.decided_at)
-    .bind(record.actor)
-    .bind(record.reason)
+    .bind_optional_text(record.decided_at)
+    .bind_optional_text(record.actor)
+    .bind_optional_text(record.reason)
     .exec(executor)
     .await
     .map_err(storage_error)?;
@@ -2231,9 +2283,9 @@ async fn update_approval_record_decision(
          WHERE id = $5 AND session_id = $6",
     )
     .bind(record.status.as_str())
-    .bind(record.decided_at.clone())
-    .bind(record.actor.clone())
-    .bind(record.reason.clone())
+    .bind_optional_text(record.decided_at.clone())
+    .bind_optional_text(record.actor.clone())
+    .bind_optional_text(record.reason.clone())
     .bind(record.id)
     .bind(record.session_id)
     .exec(executor)

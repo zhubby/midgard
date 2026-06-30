@@ -2,16 +2,33 @@
 
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import { NoWorkspaceAccess } from "@/components/NoWorkspaceAccess";
 import { fetchOrganizationContexts } from "@/lib/api";
-import type { AuthUser } from "@/lib/types";
+import type { AuthUser, PermissionKey } from "@/lib/types";
 
 interface RootRedirectProps {
+  busyAuth: boolean;
+  systemPermissions: PermissionKey[];
   user: AuthUser;
+  onLogout: () => void;
 }
 
-export function RootRedirect({ user }: RootRedirectProps) {
+type RedirectState =
+  | { status: "opening"; error: null }
+  | { status: "no_access"; error: null }
+  | { status: "error"; error: string };
+
+export function RootRedirect({
+  busyAuth,
+  systemPermissions,
+  user,
+  onLogout,
+}: RootRedirectProps) {
   const router = useRouter();
-  const [error, setError] = useState<string | null>(null);
+  const [state, setState] = useState<RedirectState>({
+    status: "opening",
+    error: null,
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -22,6 +39,10 @@ export function RootRedirect({ user }: RootRedirectProps) {
         const context = contexts.find((item) => item.workspaces.length > 0);
         const workspace = context?.workspaces[0];
         if (!context || !workspace) {
+          if (!systemPermissions.includes("system.orgs.create")) {
+            setState({ status: "no_access", error: null });
+            return;
+          }
           router.replace("/organizations/new");
           return;
         }
@@ -32,18 +53,30 @@ export function RootRedirect({ user }: RootRedirectProps) {
       })
       .catch((caught) => {
         if (!cancelled) {
-          setError(
-            caught instanceof Error
-              ? caught.message
-              : "Failed to load organizations.",
-          );
+          setState({
+            status: "error",
+            error:
+              caught instanceof Error
+                ? caught.message
+                : "Failed to load organizations.",
+          });
         }
       });
 
     return () => {
       cancelled = true;
     };
-  }, [router]);
+  }, [router, systemPermissions]);
+
+  if (state.status === "no_access") {
+    return (
+      <NoWorkspaceAccess
+        busyAuth={busyAuth}
+        user={user}
+        onLogout={onLogout}
+      />
+    );
+  }
 
   return (
     <main className="login-shell login-loading" aria-busy="true">
@@ -53,7 +86,7 @@ export function RootRedirect({ user }: RootRedirectProps) {
         </div>
         <div>
           <p className="section-kicker">{user.display_name || user.email}</p>
-          <h1>{error ?? "Opening workspace"}</h1>
+          <h1>{state.error ?? "Opening workspace"}</h1>
         </div>
       </div>
     </main>

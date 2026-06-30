@@ -10,10 +10,10 @@ use midgard_server::{
     AuthContext, CreateAuthUserRequest, CreateMiddlewareInstanceRequest, CreateOrganizationRequest,
     CreateRbacRoleRequest, CreateWorkspaceRequest, DashboardTone, LoginRequest, LogoutResponse,
     MiddlewareDashboardState, MiddlewareMetric, MiddlewareTimelineEvent, MiddlewareWorkload,
-    OrganizationMemberView, PluginResponse, ReplaceRolePermissionsRequest, RunAccepted,
-    UpdateAuthUserRequest, UpdateMiddlewareInstanceRequest, UpdateOrganizationMemberRequest,
-    UpdateRbacRoleRequest, UpdateWorkspaceRequest, WorkspaceEvent, WorkspaceEventPayload,
-    WorkspaceEventType, WorkspaceRuntimeConfigInput, WorkspaceSnapshot,
+    OrganizationMemberView, PluginResponse, RegisterRequest, ReplaceRolePermissionsRequest,
+    RunAccepted, UpdateAuthUserRequest, UpdateMiddlewareInstanceRequest,
+    UpdateOrganizationMemberRequest, UpdateRbacRoleRequest, UpdateWorkspaceRequest, WorkspaceEvent,
+    WorkspaceEventPayload, WorkspaceEventType, WorkspaceRuntimeConfigInput, WorkspaceSnapshot,
 };
 use midgard_storage::{
     AuthUser, DockerRuntimeConfigView, KubernetesRuntimeConfigView, MiddlewareDesiredState,
@@ -72,6 +72,7 @@ fn protocol_typescript() -> String {
         AuthUser::decl(&cfg),
         AuthContext::decl(&cfg),
         LoginRequest::decl(&cfg),
+        RegisterRequest::decl(&cfg),
         CreateAuthUserRequest::decl(&cfg),
         UpdateAuthUserRequest::decl(&cfg),
         LogoutResponse::decl(&cfg),

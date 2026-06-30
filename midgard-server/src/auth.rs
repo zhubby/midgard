@@ -77,6 +77,13 @@ pub struct LoginRequest {
 }
 
 #[derive(Clone, Debug, Deserialize, TS)]
+pub struct RegisterRequest {
+    pub email: String,
+    pub password: String,
+    pub display_name: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, TS)]
 pub struct CreateAuthUserRequest {
     pub email: String,
     pub password: String,
@@ -180,13 +187,74 @@ pub(crate) async fn login(
         return Err(invalid_credentials());
     }
 
+    create_session_response(&state, &headers, record.user, "login_success", None).await
+}
+
+pub(crate) async fn register(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<RegisterRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let email = normalize_email(&request.email);
+    if email.is_empty() {
+        return Err(AppError::BadRequest("email is required".to_string()));
+    }
+    if state.auth.load_user_by_email(&email).await?.is_some() {
+        return Err(AppError::Conflict("user already exists".to_string()));
+    }
+
+    let is_initial_user = state.auth.list_users().await?.is_empty();
+    let display_name = request
+        .display_name
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| email.clone());
+    let role = if is_initial_user {
+        UserRole::Admin
+    } else {
+        UserRole::Viewer
+    };
+    let created = state
+        .auth
+        .create_user(NewUser {
+            email,
+            display_name,
+            role,
+            system_role_id: None,
+            password_hash: hash_password(&request.password)?,
+            active: true,
+        })
+        .await
+        .map_err(crate::storage_app_error)?;
+
+    let (response_headers, context) = create_session_response(
+        &state,
+        &headers,
+        created,
+        "user_registered",
+        Some(format!(r#"{{"initial_user":{is_initial_user}}}"#)),
+    )
+    .await?;
+
+    Ok((StatusCode::CREATED, response_headers, context))
+}
+
+async fn create_session_response(
+    state: &AppState,
+    headers: &HeaderMap,
+    user: AuthUser,
+    event_type: &str,
+    detail_json: Option<String>,
+) -> Result<(HeaderMap, Json<AuthContext>), AppError> {
     let token = generate_session_token();
     let token_hash = session_token_hash(&token);
     let now = Utc::now();
+    let ip_address = client_ip(headers);
+    let user_agent = header_string(headers, USER_AGENT.as_str());
     state
         .auth
         .create_auth_session(NewAuthSession {
-            user_id: record.user.id,
+            user_id: user.id,
             token_hash,
             created_at: now.to_rfc3339(),
             expires_at: (now + state.auth_settings.session_ttl).to_rfc3339(),
@@ -197,13 +265,13 @@ pub(crate) async fn login(
     state
         .auth
         .record_auth_audit_event(NewAuthAuditEvent {
-            user_id: Some(record.user.id),
-            event_type: "login_success".to_string(),
-            email_lower: Some(record.user.email.clone()),
+            user_id: Some(user.id),
+            event_type: event_type.to_string(),
+            email_lower: Some(user.email.clone()),
             occurred_at: now.to_rfc3339(),
             ip_address,
             user_agent,
-            detail_json: None,
+            detail_json,
         })
         .await?;
 
@@ -214,13 +282,9 @@ pub(crate) async fn login(
             .map_err(|err| AppError::Internal(format!("build session cookie: {err}")))?,
     );
 
-    let user = state
-        .auth
-        .load_user_by_id(record.user.id)
-        .await?
-        .unwrap_or(record.user);
+    let user = state.auth.load_user_by_id(user.id).await?.unwrap_or(user);
 
-    let context = auth_context(&state, user).await?;
+    let context = auth_context(state, user).await?;
 
     Ok((response_headers, Json(context)))
 }

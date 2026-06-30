@@ -309,6 +309,121 @@ async fn login_rejects_bad_password_without_cookie() {
 }
 
 #[tokio::test]
+async fn register_creates_initial_admin_session() {
+    let auth = Arc::new(MemoryAuthStore::new());
+    let app = app_with_provider_auth_orgs_and_credentials(
+        Arc::new(MemoryAgentSessionStore::new()),
+        auth,
+        Arc::new(MemoryOrganizationStore::new()),
+        Arc::new(ScriptedLlmProvider::single(LlmResponse::text("ok"))),
+        AuthSettings::default(),
+        WorkspaceCredentialSettings::default(),
+    );
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/auth/register")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"email":"owner@example.com","password":"valid-password","display_name":"Owner"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let cookie = response
+        .headers()
+        .get(SET_COOKIE)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string();
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["user"]["email"], "owner@example.com");
+    assert_eq!(json["user"]["role"], "admin");
+    assert_eq!(json["system_role"]["builtin_key"], "system_owner");
+    assert!(json["user"].get("password_hash").is_none());
+
+    let me = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/auth/me")
+                .header(COOKIE, cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(me.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn register_creates_later_viewer_without_admin_permissions() {
+    let (app, _, _) = app_with_role(UserRole::Admin).await;
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/auth/register")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"email":"viewer@example.com","password":"valid-password","display_name":"Viewer"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(json["user"]["email"], "viewer@example.com");
+    assert_eq!(json["user"]["role"], "viewer");
+    assert_eq!(json["system_role"]["builtin_key"], "system_viewer");
+    assert!(
+        !json["system_permissions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|permission| permission.as_str() == Some("system.users.manage"))
+    );
+}
+
+#[tokio::test]
+async fn register_rejects_duplicate_email_without_cookie() {
+    let (app, _, _) = app_with_role(UserRole::Admin).await;
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/auth/register")
+                .header("content-type", "application/json")
+                .body(Body::from(format!(
+                    r#"{{"email":"{TEST_EMAIL}","password":"valid-password","display_name":"Duplicate"}}"#
+                )))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert!(response.headers().get(SET_COOKIE).is_none());
+}
+
+#[tokio::test]
 async fn logout_revokes_current_session() {
     let (app, cookie, _) = app_with_role(UserRole::Operator).await;
 

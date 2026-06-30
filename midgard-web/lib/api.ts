@@ -18,6 +18,7 @@ import type {
   PermissionCatalogItem,
   PluginResponse,
   ReplaceRolePermissionsRequest,
+  RegisterRequest,
   RbacRole,
   RunAccepted,
   ToolDefinition,
@@ -39,7 +40,18 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (!res.ok) {
     const body = await res.text().catch(() => "");
-    throw new Error(`API ${res.status}: ${body || res.statusText}`);
+    let message = body || res.statusText;
+    if (body) {
+      try {
+        const parsed = JSON.parse(body) as { error?: unknown };
+        if (typeof parsed.error === "string") {
+          message = parsed.error;
+        }
+      } catch {
+        message = body;
+      }
+    }
+    throw new Error(message);
   }
 
   return res.json() as Promise<T>;
@@ -54,6 +66,14 @@ export function login(email: string, password: string): Promise<AuthContext> {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email, password }),
+  });
+}
+
+export function register(payload: RegisterRequest): Promise<AuthContext> {
+  return request<AuthContext>("/api/auth/register", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
   });
 }
 

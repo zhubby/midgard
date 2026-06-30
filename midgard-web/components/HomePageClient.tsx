@@ -6,7 +6,14 @@ import { RootRedirect } from "@/components/RootRedirect";
 export function HomePageClient() {
   return (
     <AuthGate>
-      {({ user }) => <RootRedirect user={user} />}
+      {({ auth, busyAuth, user, onLogout }) => (
+        <RootRedirect
+          busyAuth={busyAuth}
+          systemPermissions={auth.system_permissions}
+          user={user}
+          onLogout={onLogout}
+        />
+      )}
     </AuthGate>
   );
 }

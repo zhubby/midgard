@@ -686,6 +686,46 @@ select {
   padding: 24px;
 }
 
+.login-card-heading {
+  display: grid;
+  gap: 14px;
+}
+
+.auth-mode-toggle {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius);
+  background: hsl(var(--muted));
+  padding: 4px;
+}
+
+.auth-mode-toggle button {
+  min-height: 32px;
+  border-radius: calc(var(--radius) - 3px);
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  cursor: pointer;
+  font-size: 0.84rem;
+  font-weight: 650;
+  transition:
+    background-color 150ms ease,
+    box-shadow 150ms ease,
+    color 150ms ease;
+}
+
+.auth-mode-toggle button.active {
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+  box-shadow: 0 1px 2px hsl(var(--foreground) / 0.08);
+}
+
+.auth-mode-toggle button:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
+}
+
 .org-setup-shell {
   grid-template-columns: minmax(320px, 0.9fr) minmax(380px, 480px);
 }
@@ -713,6 +753,16 @@ select {
 
 .login-alert {
   margin: 0;
+}
+
+.access-card {
+  width: min(420px, 100%);
+}
+
+.access-copy {
+  color: hsl(var(--muted-foreground));
+  font-size: 0.9rem;
+  line-height: 1.45;
 }
 
 .user-chip {

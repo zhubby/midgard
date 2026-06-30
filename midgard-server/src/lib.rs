@@ -44,7 +44,7 @@ mod workspace;
 
 pub use auth::{
     AuthContext, AuthSettings, CreateAuthUserRequest, LoginRequest, LogoutResponse,
-    UpdateAuthUserRequest,
+    RegisterRequest, UpdateAuthUserRequest,
 };
 pub use operator::{
     OPERATOR_TOKEN_METADATA, OperatorConnectionSnapshot, OperatorControlService,
@@ -210,6 +210,7 @@ pub fn app_with_state(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
         .route("/api/auth/login", post(auth::login))
+        .route("/api/auth/register", post(auth::register))
         .route("/api/auth/logout", post(auth::logout))
         .route("/api/auth/me", get(auth::me))
         .route("/api/permissions/catalog", get(permission_catalog_endpoint))
