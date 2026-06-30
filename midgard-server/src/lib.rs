@@ -17,7 +17,9 @@ use midgard_agent::{
     CompleteTaskTool, LlmProvider, LlmResponse, PendingApproval, ScriptedLlmProvider,
 };
 use midgard_controller::{MiddlewareController, MiddlewarePlugin};
-use midgard_plugin_example::ExampleRedisPlugin;
+use midgard_docker::{
+    BollardDockerClient, DockerClient, DockerPlugin, DockerRuntimeResolver, DockerToolError,
+};
 use midgard_storage::{
     MemoryAgentSessionStore, MemoryAuthStore, MemoryOrganizationStore, MiddlewareDesiredState,
     MiddlewareInstance, MiddlewareInstanceStatus, MiddlewareInstanceUpdate, NewMiddlewareInstance,
@@ -57,9 +59,9 @@ pub use workspace::{
 
 #[derive(Clone)]
 pub struct AppState {
-    pub(crate) tools: Arc<ToolRegistry>,
     pub(crate) runner: Arc<AgentRunner>,
     pub(crate) plugins: Arc<Vec<PluginResponse>>,
+    pub(crate) docker_plugin: Arc<DockerPlugin>,
     pub(crate) sessions: SharedAgentSessionStore,
     pub(crate) auth: SharedAuthStore,
     pub(crate) orgs: SharedOrganizationStore,
@@ -181,16 +183,18 @@ pub fn app_state_with_provider_auth_orgs_credentials_and_operator_registry(
     registry.register(CompleteTaskTool);
     operator::register_operator_tools(&mut registry, orgs.clone(), operator_registry.clone());
 
-    let plugin = ExampleRedisPlugin;
-    let controller = plugin.controller();
-    controller.register_tools(&mut registry);
     let tools = Arc::new(registry);
     let runner = Arc::new(AgentRunner::new(provider, tools.clone()));
+    let docker_resolver = Arc::new(ServerDockerRuntimeResolver {
+        orgs: orgs.clone(),
+        workspace_credentials: workspace_credentials.clone(),
+    });
+    let docker_plugin = Arc::new(DockerPlugin::new(docker_resolver));
 
     AppState {
-        tools,
         runner,
-        plugins: Arc::new(vec![PluginResponse::from(plugin.metadata())]),
+        plugins: Arc::new(Vec::new()),
+        docker_plugin,
         sessions,
         auth,
         orgs,
@@ -755,7 +759,9 @@ async fn list_workspace_tools(
 ) -> Result<Json<Vec<ToolDefinition>>, AppError> {
     let scope = load_workspace_scope(&state, &user, &org_slug, &workspace_slug).await?;
     require_org_permission(&state, &scope.membership, PermissionKey::WorkspaceRead).await?;
-    Ok(Json(state.tools.definitions()))
+    Ok(Json(
+        workspace_tool_registry(&state, &scope.workspace).definitions(),
+    ))
 }
 
 async fn list_workspace_plugins(
@@ -765,7 +771,7 @@ async fn list_workspace_plugins(
 ) -> Result<Json<Vec<PluginResponse>>, AppError> {
     let scope = load_workspace_scope(&state, &user, &org_slug, &workspace_slug).await?;
     require_org_permission(&state, &scope.membership, PermissionKey::WorkspaceRead).await?;
-    Ok(Json((*state.plugins).clone()))
+    Ok(Json(workspace_plugins(&state, &scope.workspace)))
 }
 
 async fn list_sessions(
@@ -856,7 +862,7 @@ async fn run_agent(
         return Err(AppError::NotFound("agent session not found".to_string()));
     }
     let run_id = Uuid::new_v4();
-    spawn_agent_run(state, scope.workspace.id, id, run_id);
+    spawn_agent_run(state, scope.workspace.clone(), id, run_id);
 
     Ok((
         StatusCode::ACCEPTED,
@@ -876,7 +882,8 @@ async fn stream_agent(
     let scope = load_workspace_scope(&state, &user, &org_slug, &workspace_slug).await?;
     require_org_permission(&state, &scope.membership, PermissionKey::WorkspaceOperate).await?;
     let session = load_or_resumed_session(&state, scope.workspace.id, id).await?;
-    let result = state.runner.run(session).await?;
+    let tools = workspace_tool_registry(&state, &scope.workspace);
+    let result = state.runner.run_with_tools(session, tools).await?;
     state
         .sessions
         .save_session_in_workspace(scope.workspace.id, result.session)
@@ -921,7 +928,7 @@ async fn record_approval(
         },
     );
     if request.resume {
-        spawn_agent_run(state.clone(), scope.workspace.id, id, Uuid::new_v4());
+        spawn_agent_run(state.clone(), scope.workspace.clone(), id, Uuid::new_v4());
     }
 
     Ok(Json(ApprovalResponse {
@@ -1201,8 +1208,8 @@ async fn workspace_snapshot(
         session,
         sessions,
         active_session_id: session_id,
-        tools: state.tools.definitions(),
-        plugins: (*state.plugins).clone(),
+        tools: workspace_tool_registry(state, &scope.workspace).definitions(),
+        plugins: workspace_plugins(state, &scope.workspace),
         middleware_instances,
         middleware,
         approvals,
@@ -1219,6 +1226,86 @@ fn require_configured_workspace_runtime(workspace: &Workspace) -> Result<(), App
     Err(AppError::BadRequest(
         "workspace runtime must be configured before adding middleware".to_string(),
     ))
+}
+
+fn workspace_tool_registry(state: &AppState, workspace: &Workspace) -> Arc<ToolRegistry> {
+    let mut registry = ToolRegistry::default();
+    registry.register(CompleteTaskTool);
+    operator::register_operator_tools(
+        &mut registry,
+        state.orgs.clone(),
+        state.operator_registry.clone(),
+    );
+
+    if workspace_uses_docker_runtime(workspace) {
+        let controller = state.docker_plugin.controller();
+        controller.register_tools(&mut registry);
+    }
+
+    Arc::new(registry)
+}
+
+fn workspace_plugins(state: &AppState, workspace: &Workspace) -> Vec<PluginResponse> {
+    let mut plugins = (*state.plugins).clone();
+    if workspace_uses_docker_runtime(workspace) {
+        plugins.push(PluginResponse::from(state.docker_plugin.metadata()));
+    }
+
+    plugins
+}
+
+fn workspace_uses_docker_runtime(workspace: &Workspace) -> bool {
+    workspace.runtime_config.status == WorkspaceRuntimeConfigStatus::Configured
+        && matches!(
+            &workspace.runtime_config.mode,
+            Some(WorkspaceRuntimeMode::Docker)
+        )
+}
+
+#[derive(Clone)]
+struct ServerDockerRuntimeResolver {
+    orgs: SharedOrganizationStore,
+    workspace_credentials: WorkspaceCredentialSettings,
+}
+
+#[async_trait::async_trait]
+impl DockerRuntimeResolver for ServerDockerRuntimeResolver {
+    async fn resolve(
+        &self,
+        context: &midgard_tools::ToolCallContext,
+    ) -> Result<Arc<dyn DockerClient>, DockerToolError> {
+        let workspace_id = context.workspace_id.as_deref().ok_or_else(|| {
+            DockerToolError::Runtime("current agent workspace is required".to_string())
+        })?;
+        let workspace_id = Uuid::parse_str(workspace_id).map_err(|err| {
+            DockerToolError::Runtime(format!("current agent workspace is not a UUID: {err}"))
+        })?;
+        let secret = self
+            .orgs
+            .load_workspace_runtime_config_secret(workspace_id)
+            .await
+            .map_err(|err| DockerToolError::Runtime(err.to_string()))?
+            .ok_or_else(|| {
+                DockerToolError::Runtime(
+                    "workspace Docker runtime credentials are not configured".to_string(),
+                )
+            })?;
+        if secret.view.status != WorkspaceRuntimeConfigStatus::Configured
+            || secret.view.mode != Some(WorkspaceRuntimeMode::Docker)
+        {
+            return Err(DockerToolError::Runtime(
+                "current workspace is not configured for Docker".to_string(),
+            ));
+        }
+        let endpoint = runtime::decrypt_workspace_runtime_secret(
+            &self.workspace_credentials,
+            &secret.ciphertext,
+        )
+        .map_err(|err| DockerToolError::Runtime(err.to_string()))?;
+        let client = BollardDockerClient::connect(&endpoint)?;
+
+        Ok(Arc::new(client))
+    }
 }
 
 pub(crate) fn publish_middleware_instance_change(
@@ -1543,8 +1630,9 @@ fn required_request_name(value: &str, label: &str) -> Result<String, AppError> {
     Ok(value.to_string())
 }
 
-fn spawn_agent_run(state: AppState, workspace_id: Uuid, session_id: Uuid, run_id: Uuid) {
+fn spawn_agent_run(state: AppState, workspace: Workspace, session_id: Uuid, run_id: Uuid) {
     tokio::spawn(async move {
+        let workspace_id = workspace.id;
         let workspace_id_string = workspace_id.to_string();
         state.events.publish_for_workspace(
             workspace_id_string.clone(),
@@ -1570,9 +1658,10 @@ fn spawn_agent_run(state: AppState, workspace_id: Uuid, session_id: Uuid, run_id
 
         let bus = state.events.clone();
         let event_workspace_id = workspace_id.to_string();
+        let tools = workspace_tool_registry(&state, &workspace);
         let result = state
             .runner
-            .run_with_observer(session, move |event| {
+            .run_with_observer_and_tools(session, tools, move |event| {
                 bus.publish_for_workspace(
                     event_workspace_id.clone(),
                     agent_run_event_payload(session_id, event),

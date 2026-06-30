@@ -16,8 +16,8 @@ pub use org::{
     MiddlewareInstance, MiddlewareInstanceStatus, MiddlewareInstanceUpdate, NewMiddlewareInstance,
     NewOrganization, NewOrganizationMembership, NewWorkspace, Organization, OrganizationContext,
     OrganizationMembership, OrganizationMembershipUpdate, OrganizationRole, Workspace,
-    WorkspaceRuntimeConfigRecord, WorkspaceRuntimeConfigStatus, WorkspaceRuntimeConfigView,
-    WorkspaceRuntimeMode, WorkspaceUpdate,
+    WorkspaceRuntimeConfigRecord, WorkspaceRuntimeConfigSecret, WorkspaceRuntimeConfigStatus,
+    WorkspaceRuntimeConfigView, WorkspaceRuntimeMode, WorkspaceUpdate,
 };
 pub use postgres::{
     PostgresAgentSessionStore, StoredAgentApprovalRecord, StoredAgentMessage, StoredAgentSession,

@@ -11,7 +11,8 @@ use crate::auth::{
 use crate::org::{
     MiddlewareInstance, MiddlewareInstanceUpdate, NewMiddlewareInstance, NewOrganization,
     NewOrganizationMembership, NewWorkspace, Organization, OrganizationContext,
-    OrganizationMembership, OrganizationMembershipUpdate, Workspace, WorkspaceUpdate,
+    OrganizationMembership, OrganizationMembershipUpdate, Workspace, WorkspaceRuntimeConfigSecret,
+    WorkspaceUpdate,
 };
 use crate::rbac::{NewRbacRole, PermissionKey, RbacRole, RbacRoleUpdate};
 
@@ -151,6 +152,10 @@ pub trait OrganizationStore: Send + Sync {
         organization_id: Uuid,
         slug: &str,
     ) -> MidgardResult<Option<Workspace>>;
+    async fn load_workspace_runtime_config_secret(
+        &self,
+        workspace_id: Uuid,
+    ) -> MidgardResult<Option<WorkspaceRuntimeConfigSecret>>;
     async fn list_workspaces(&self, organization_id: Uuid) -> MidgardResult<Vec<Workspace>>;
     async fn update_workspace(
         &self,

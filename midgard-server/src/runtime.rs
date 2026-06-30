@@ -176,6 +176,61 @@ fn encrypt_runtime_secret(key: &str, plaintext: &[u8]) -> MidgardResult<String> 
     ))
 }
 
+pub(crate) fn decrypt_workspace_runtime_secret(
+    settings: &WorkspaceCredentialSettings,
+    ciphertext: &str,
+) -> Result<String, AppError> {
+    let key = settings.encryption_key.as_deref().ok_or_else(|| {
+        AppError::Midgard(MidgardError::Configuration(
+            "secrets.workspace_credentials_key is required to read workspace runtime credentials"
+                .to_string(),
+        ))
+    })?;
+    let mut parts = ciphertext.split(':');
+    let version = parts.next();
+    let nonce = parts.next();
+    let encrypted = parts.next();
+    if version != Some("v1") || nonce.is_none() || encrypted.is_none() || parts.next().is_some() {
+        return Err(AppError::Midgard(MidgardError::Configuration(
+            "workspace runtime credential ciphertext has unsupported format".to_string(),
+        )));
+    }
+    let nonce = STANDARD_NO_PAD.decode(nonce.unwrap()).map_err(|err| {
+        AppError::Midgard(MidgardError::Configuration(format!(
+            "decode workspace credential nonce: {err}"
+        )))
+    })?;
+    if nonce.len() != 12 {
+        return Err(AppError::Midgard(MidgardError::Configuration(
+            "workspace runtime credential nonce has invalid length".to_string(),
+        )));
+    }
+    let encrypted = STANDARD_NO_PAD.decode(encrypted.unwrap()).map_err(|err| {
+        AppError::Midgard(MidgardError::Configuration(format!(
+            "decode workspace credential ciphertext: {err}"
+        )))
+    })?;
+    let key_hash = Sha256::digest(key.as_bytes());
+    let cipher = Aes256Gcm::new_from_slice(&key_hash).map_err(|err| {
+        MidgardError::Configuration(format!(
+            "invalid workspace credential encryption key: {err}"
+        ))
+    })?;
+    let plaintext = cipher
+        .decrypt(Nonce::from_slice(&nonce), encrypted.as_ref())
+        .map_err(|err| {
+            AppError::Midgard(MidgardError::Configuration(format!(
+                "decrypt workspace credentials: {err}"
+            )))
+        })?;
+
+    String::from_utf8(plaintext).map_err(|err| {
+        AppError::Midgard(MidgardError::Configuration(format!(
+            "workspace runtime credential is not valid UTF-8: {err}"
+        )))
+    })
+}
+
 #[derive(Debug, Deserialize)]
 struct KubeConfigSummary {
     #[serde(rename = "current-context")]
@@ -206,4 +261,42 @@ struct NamedKubeCluster {
 #[derive(Debug, Deserialize)]
 struct KubeClusterRef {
     server: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn docker_runtime_config_encrypts_endpoint_and_can_be_decrypted_for_server_execution() {
+        let settings = WorkspaceCredentialSettings::new(Some("test workspace key".to_string()));
+        let record = prepare_workspace_runtime_config(
+            &settings,
+            WorkspaceRuntimeConfigInput::Docker {
+                docker_api_url: "https://secret-docker.example.com:2376".to_string(),
+                allow_insecure_local_endpoint: false,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(record.view.mode, Some(WorkspaceRuntimeMode::Docker));
+        assert_eq!(record.view.status, WorkspaceRuntimeConfigStatus::Configured);
+        assert_eq!(
+            record
+                .view
+                .docker
+                .as_ref()
+                .and_then(|docker| docker.endpoint_host.as_deref()),
+            Some("secret-docker.example.com")
+        );
+        assert!(record.ciphertext.starts_with("v1:"));
+        assert!(
+            !record
+                .ciphertext
+                .contains("https://secret-docker.example.com:2376")
+        );
+
+        let plaintext = decrypt_workspace_runtime_secret(&settings, &record.ciphertext).unwrap();
+        assert_eq!(plaintext, "https://secret-docker.example.com:2376");
+    }
 }

@@ -11,7 +11,7 @@ This repository is a Rust workspace with a Bun + Next.js frontend. The current c
 - `midgard-tools`: tool trait, tool definitions, registry, execution result types, and risk metadata exposure.
 - `midgard-controller`: middleware controller and plugin contracts.
 - `midgard-k8s`: Kubernetes client abstraction, workload/pod/event summaries, and mock client.
-- `midgard-plugin-example`: example Redis middleware plugin and controller tool registration.
+- `midgard-docker`: Docker runtime client abstraction, controller plugin, and workspace-scoped Docker management tools.
 - `midgard-server`: Axum HTTP API library and app state wiring.
 - `midgard-cli`: Clap-based project entrypoint, config init command, server startup, and Toasty migration wrapper.
 - `midgard-web`: Bun + TypeScript + Next.js frontend.

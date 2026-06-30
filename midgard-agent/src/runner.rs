@@ -67,9 +67,31 @@ impl AgentRunner {
         self.run_with_observer(session, |_| {}).await
     }
 
+    pub async fn run_with_tools(
+        &self,
+        session: AgentSession,
+        tools: Arc<ToolRegistry>,
+    ) -> MidgardResult<AgentRunResult> {
+        self.run_with_observer_and_tools(session, tools, |_| {})
+            .await
+    }
+
     pub async fn run_with_observer<F>(
         &self,
+        session: AgentSession,
+        observer: F,
+    ) -> MidgardResult<AgentRunResult>
+    where
+        F: FnMut(AgentRunEvent) + Send,
+    {
+        self.run_with_observer_and_tools(session, self.tools.clone(), observer)
+            .await
+    }
+
+    pub async fn run_with_observer_and_tools<F>(
+        &self,
         mut session: AgentSession,
+        tools: Arc<ToolRegistry>,
         mut observer: F,
     ) -> MidgardResult<AgentRunResult>
     where
@@ -80,7 +102,7 @@ impl AgentRunner {
         session.last_error = None;
 
         if self
-            .resume_pending_approval(&mut session, &mut events, &mut observer)
+            .resume_pending_approval(&tools, &mut session, &mut events, &mut observer)
             .await?
         {
             return Ok(AgentRunResult { session, events });
@@ -88,10 +110,8 @@ impl AgentRunner {
 
         let mut run_iterations = 0;
         while run_iterations < self.config.max_iterations {
-            let request = LlmRequest::new(
-                self.messages_for_provider(&session),
-                self.tools.definitions(),
-            );
+            let request =
+                LlmRequest::new(self.messages_for_provider(&session), tools.definitions());
             let mut stream = self.provider.stream(request);
             let mut content = String::new();
             let mut streamed_tool_calls = Vec::new();
@@ -194,7 +214,14 @@ impl AgentRunner {
 
             for tool_call in response.tool_calls {
                 if self
-                    .handle_tool_call(&mut session, &mut events, &mut observer, tool_call, false)
+                    .handle_tool_call(
+                        &tools,
+                        &mut session,
+                        &mut events,
+                        &mut observer,
+                        tool_call,
+                        false,
+                    )
                     .await?
                 {
                     return Ok(AgentRunResult { session, events });
@@ -232,6 +259,7 @@ impl AgentRunner {
 
     async fn resume_pending_approval<F>(
         &self,
+        tools: &ToolRegistry,
         session: &mut AgentSession,
         events: &mut Vec<AgentRunEvent>,
         observer: &mut F,
@@ -270,7 +298,9 @@ impl AgentRunner {
                 Ok(false)
             }
             Some(true) => {
-                let result = self.execute_tool_call(session, &approval.tool_call).await;
+                let result = self
+                    .execute_tool_call(tools, session, &approval.tool_call)
+                    .await;
                 let should_stop = !result.should_continue;
                 self.record_tool_result(
                     session,
@@ -292,6 +322,7 @@ impl AgentRunner {
 
     async fn handle_tool_call<F>(
         &self,
+        tools: &ToolRegistry,
         session: &mut AgentSession,
         events: &mut Vec<AgentRunEvent>,
         observer: &mut F,
@@ -311,7 +342,7 @@ impl AgentRunner {
             );
         }
 
-        let Some(definition) = self.tools.definition(&tool_call.name) else {
+        let Some(definition) = tools.definition(&tool_call.name) else {
             let result = ToolResult::error(format!("tool not found: {}", tool_call.name));
             self.record_tool_result(
                 session,
@@ -336,7 +367,7 @@ impl AgentRunner {
             return Ok(true);
         }
 
-        let result = self.execute_tool_call(session, &tool_call).await;
+        let result = self.execute_tool_call(tools, session, &tool_call).await;
         let should_stop = !result.should_continue;
         self.record_tool_result(
             session,
@@ -356,6 +387,7 @@ impl AgentRunner {
 
     async fn execute_tool_call(
         &self,
+        tools: &ToolRegistry,
         session: &AgentSession,
         tool_call: &AgentToolCall,
     ) -> ToolResult {
@@ -366,8 +398,7 @@ impl AgentRunner {
             ));
         }
 
-        match self
-            .tools
+        match tools
             .call_with_context(
                 &tool_call.name,
                 tool_call.arguments.clone(),

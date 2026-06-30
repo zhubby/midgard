@@ -1,6 +1,6 @@
 # Midgard
 
-Midgard is an agent-native middleware operations platform for Kubernetes. It uses an LLM agent to reason over operational goals, invoke registered tools, and coordinate middleware controllers that manage workloads deployed on Kubernetes.
+Midgard is an agent-native middleware operations platform for Docker and Kubernetes workspaces. It uses an LLM agent to reason over operational goals, invoke registered tools, and coordinate middleware controllers that manage workloads in the current workspace runtime.
 
 ## Architecture
 
@@ -11,6 +11,7 @@ Midgard is an agent-native middleware operations platform for Kubernetes. It use
 - Pluggable middleware controllers that register capabilities as tools.
 - Persistent approval audit history for high-risk and critical tool calls.
 - Kubernetes abstraction layer for cluster, namespace, workload, pod, and event operations.
+- Docker runtime tools that are only visible to Docker-configured workspaces.
 - Bun + TypeScript + Next.js frontend in `midgard-web`.
 
 ## Workspace
@@ -23,7 +24,7 @@ midgard-storage             Toasty/PostgreSQL storage for agent sessions
 midgard-tools               Tool trait, registry, and execution results
 midgard-controller          Middleware controller plugin contracts
 midgard-k8s                 Kubernetes operations abstraction
-midgard-plugin-example      Example middleware plugin
+midgard-docker              Docker runtime tools and plugin
 midgard-protocol            gRPC contracts for server/operator control
 midgard-server              Axum HTTP API library
 midgard-cli                 Clap CLI entrypoint and migration wrapper

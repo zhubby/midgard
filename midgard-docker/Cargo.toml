@@ -1,5 +1,5 @@
 [package]
-name = "midgard-plugin-example"
+name = "midgard-docker"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -7,10 +7,14 @@ version.workspace = true
 
 [dependencies]
 async-trait.workspace = true
+bollard.workspace = true
+futures-util.workspace = true
 midgard-controller.workspace = true
 midgard-core.workspace = true
 midgard-tools.workspace = true
+serde.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true

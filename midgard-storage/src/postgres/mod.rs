@@ -20,7 +20,8 @@ use crate::{
         MiddlewareInstanceUpdate, NewMiddlewareInstance, NewOrganization,
         NewOrganizationMembership, NewWorkspace, Organization, OrganizationContext,
         OrganizationMembership, OrganizationMembershipUpdate, OrganizationRole, Workspace,
-        WorkspaceRuntimeConfigStatus, WorkspaceRuntimeConfigView, WorkspaceUpdate,
+        WorkspaceRuntimeConfigSecret, WorkspaceRuntimeConfigStatus, WorkspaceRuntimeConfigView,
+        WorkspaceUpdate,
     },
     rbac::{
         NewRbacRole, ORG_OWNER_BUILTIN, PermissionKey, RbacRole, RbacRoleUpdate, RbacScopeKind,
@@ -949,6 +950,61 @@ impl OrganizationStore for PostgresAgentSessionStore {
         .map_err(storage_error)?;
 
         rows.into_iter().next().map(workspace_from_row).transpose()
+    }
+
+    async fn load_workspace_runtime_config_secret(
+        &self,
+        workspace_id: Uuid,
+    ) -> MidgardResult<Option<WorkspaceRuntimeConfigSecret>> {
+        let mut db = self.db.clone();
+        let rows = sql::query(
+            "SELECT id, runtime_mode, runtime_config_summary_json,
+                    runtime_config_status, runtime_config_updated_at,
+                    runtime_config_ciphertext
+             FROM workspaces
+             WHERE id = $1 AND archived_at IS NULL",
+        )
+        .bind(workspace_id)
+        .column_types([
+            stmt::Type::Uuid,
+            stmt::Type::String,
+            stmt::Type::String,
+            stmt::Type::String,
+            stmt::Type::String,
+            stmt::Type::String,
+        ])
+        .exec(&mut db)
+        .await
+        .map_err(storage_error)?;
+        let Some(row) = rows.into_iter().next() else {
+            return Ok(None);
+        };
+        let record = row.into_record();
+        let ciphertext = optional_string_from_value(&record[5])?;
+        let Some(ciphertext) = ciphertext else {
+            return Ok(None);
+        };
+        let mut view = match optional_string_from_value(&record[2])? {
+            Some(summary_json) => serde_json::from_str::<WorkspaceRuntimeConfigView>(&summary_json)
+                .map_err(|err| {
+                    MidgardError::Storage(format!(
+                        "invalid workspace runtime config summary JSON: {err}"
+                    ))
+                })?,
+            None => WorkspaceRuntimeConfigView::default(),
+        };
+        view.mode = optional_string_from_value(&record[1])?
+            .as_deref()
+            .map(crate::org::WorkspaceRuntimeMode::from_storage)
+            .transpose()?;
+        view.status = WorkspaceRuntimeConfigStatus::from_storage(string_from_value(&record[3])?)?;
+        view.updated_at = optional_string_from_value(&record[4])?;
+
+        Ok(Some(WorkspaceRuntimeConfigSecret {
+            workspace_id: uuid_from_value(&record[0])?,
+            view,
+            ciphertext,
+        }))
     }
 
     async fn list_workspaces(&self, organization_id: Uuid) -> MidgardResult<Vec<Workspace>> {

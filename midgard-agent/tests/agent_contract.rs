@@ -157,8 +157,8 @@ fn chat_completion_parser_extracts_tool_calls() {
                     "id": "call_1",
                     "type": "function",
                     "function": {
-                        "name": "redis_describe",
-                        "arguments": "{\"namespace\":\"default\",\"name\":\"cache\"}"
+                        "name": "docker_container_inspect",
+                        "arguments": "{\"container\":\"cache\"}"
                     }
                 }]
             }
@@ -167,8 +167,8 @@ fn chat_completion_parser_extracts_tool_calls() {
 
     let parsed = parse_chat_completion_response(&response).unwrap();
 
-    assert_eq!(parsed.tool_calls[0].name, "redis_describe");
-    assert_eq!(parsed.tool_calls[0].arguments["name"], "cache");
+    assert_eq!(parsed.tool_calls[0].name, "docker_container_inspect");
+    assert_eq!(parsed.tool_calls[0].arguments["container"], "cache");
 }
 
 #[test]
@@ -178,29 +178,29 @@ fn responses_parser_extracts_messages_and_function_calls() {
             {
                 "type": "message",
                 "role": "assistant",
-                "content": [{"type": "output_text", "text": "Checking Redis"}]
+                "content": [{"type": "output_text", "text": "Checking Docker"}]
             },
             {
                 "type": "function_call",
                 "call_id": "call_1",
-                "name": "redis_describe",
-                "arguments": "{\"namespace\":\"default\",\"name\":\"cache\"}"
+                "name": "docker_container_inspect",
+                "arguments": "{\"container\":\"cache\"}"
             }
         ]
     });
 
     let parsed = parse_responses_response(&response).unwrap();
 
-    assert_eq!(parsed.content, "Checking Redis");
-    assert_eq!(parsed.tool_calls[0].name, "redis_describe");
+    assert_eq!(parsed.content, "Checking Docker");
+    assert_eq!(parsed.tool_calls[0].name, "docker_container_inspect");
 }
 
 #[test]
 fn chat_stream_parser_aggregates_tool_arguments() {
     let input = concat!(
         "data: {\"choices\":[{\"delta\":{\"content\":\"hi \"}}]}\n\n",
-        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"redis_describe\",\"arguments\":\"{\\\"namespace\\\":\"}}]}}]}\n\n",
-        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"default\\\"}\"}}]}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"docker_container_inspect\",\"arguments\":\"{\\\"container\\\":\"}}]}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"cache\\\"}\"}}]}}]}\n\n",
         "data: [DONE]\n\n",
     );
 
@@ -212,7 +212,7 @@ fn chat_stream_parser_aggregates_tool_arguments() {
             .any(|event| matches!(event, LlmStreamEvent::ContentDelta(delta) if delta == "hi "))
     );
     assert!(events.iter().any(|event| {
-        matches!(event, LlmStreamEvent::ToolCallDone(call) if call.arguments["namespace"] == "default")
+        matches!(event, LlmStreamEvent::ToolCallDone(call) if call.arguments["container"] == "cache")
     }));
 }
 
@@ -220,7 +220,7 @@ fn chat_stream_parser_aggregates_tool_arguments() {
 fn responses_stream_parser_aggregates_function_arguments() {
     let input = concat!(
         "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n",
-        "data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"function_call\",\"id\":\"item_1\",\"call_id\":\"call_1\",\"name\":\"redis_describe\"}}\n\n",
+        "data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"function_call\",\"id\":\"item_1\",\"call_id\":\"call_1\",\"name\":\"docker_container_inspect\"}}\n\n",
         "data: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"call_1\",\"delta\":\"{\\\"name\\\":\"}\n\n",
         "data: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"call_1\",\"delta\":\"\\\"cache\\\"}\"}\n\n",
     );
@@ -228,7 +228,7 @@ fn responses_stream_parser_aggregates_function_arguments() {
     let events = parse_responses_stream_events(input).unwrap();
 
     assert!(events.iter().any(|event| {
-        matches!(event, LlmStreamEvent::ToolCallDone(call) if call.name == "redis_describe")
+        matches!(event, LlmStreamEvent::ToolCallDone(call) if call.name == "docker_container_inspect")
     }));
 }
 

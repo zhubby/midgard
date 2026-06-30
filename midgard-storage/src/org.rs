@@ -156,6 +156,13 @@ pub struct WorkspaceRuntimeConfigRecord {
     pub ciphertext: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkspaceRuntimeConfigSecret {
+    pub workspace_id: Uuid,
+    pub view: WorkspaceRuntimeConfigView,
+    pub ciphertext: String,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
 pub struct Organization {
     #[ts(type = "string")]

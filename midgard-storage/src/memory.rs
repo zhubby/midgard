@@ -17,7 +17,8 @@ use crate::{
     org::{
         MiddlewareInstance, MiddlewareInstanceUpdate, NewMiddlewareInstance, NewOrganization,
         NewOrganizationMembership, NewWorkspace, Organization, OrganizationContext,
-        OrganizationMembership, OrganizationMembershipUpdate, Workspace, WorkspaceUpdate,
+        OrganizationMembership, OrganizationMembershipUpdate, Workspace,
+        WorkspaceRuntimeConfigSecret, WorkspaceUpdate,
     },
     rbac::{
         NewRbacRole, ORG_OWNER_BUILTIN, PermissionKey, RbacRole, RbacRoleUpdate, RbacScopeKind,
@@ -70,6 +71,7 @@ pub struct MemoryOrganizationStore {
     organizations: Mutex<BTreeMap<Uuid, Organization>>,
     memberships: Mutex<BTreeMap<Uuid, OrganizationMembership>>,
     workspaces: Mutex<BTreeMap<Uuid, Workspace>>,
+    workspace_runtime_ciphertexts: Mutex<BTreeMap<Uuid, String>>,
     middleware_instances: Mutex<BTreeMap<Uuid, MiddlewareInstance>>,
     roles: Mutex<BTreeMap<Uuid, RbacRole>>,
 }
@@ -80,6 +82,7 @@ impl MemoryOrganizationStore {
             organizations: Mutex::new(BTreeMap::new()),
             memberships: Mutex::new(BTreeMap::new()),
             workspaces: Mutex::new(BTreeMap::new()),
+            workspace_runtime_ciphertexts: Mutex::new(BTreeMap::new()),
             middleware_instances: Mutex::new(BTreeMap::new()),
             roles: Mutex::new(BTreeMap::new()),
         }
@@ -1133,19 +1136,28 @@ impl OrganizationStore for MemoryOrganizationStore {
         }
 
         let now = utc_now_rfc3339();
+        let (runtime_config, runtime_config_ciphertext) = match workspace.runtime_config {
+            Some(record) => (record.view, Some(record.ciphertext)),
+            None => (Default::default(), None),
+        };
         let created = Workspace {
             id: Uuid::new_v4(),
             organization_id: workspace.organization_id,
             slug,
             name,
-            runtime_config: workspace
-                .runtime_config
-                .map(|record| record.view)
-                .unwrap_or_default(),
+            runtime_config,
             archived_at: None,
             created_at: now.clone(),
             updated_at: now,
         };
+        if let Some(ciphertext) = runtime_config_ciphertext {
+            self.workspace_runtime_ciphertexts
+                .lock()
+                .map_err(|_| {
+                    MidgardError::Storage("workspace runtime credential store poisoned".to_string())
+                })?
+                .insert(created.id, ciphertext);
+        }
         workspaces.insert(created.id, created.clone());
 
         Ok(created)
@@ -1168,6 +1180,36 @@ impl OrganizationStore for MemoryOrganizationStore {
                     && workspace.archived_at.is_none()
             })
             .cloned())
+    }
+
+    async fn load_workspace_runtime_config_secret(
+        &self,
+        workspace_id: Uuid,
+    ) -> MidgardResult<Option<WorkspaceRuntimeConfigSecret>> {
+        let workspace = self
+            .workspaces
+            .lock()
+            .map_err(|_| MidgardError::Storage("workspace store poisoned".to_string()))?
+            .get(&workspace_id)
+            .filter(|workspace| workspace.archived_at.is_none())
+            .cloned();
+        let Some(workspace) = workspace else {
+            return Ok(None);
+        };
+        let ciphertext = self
+            .workspace_runtime_ciphertexts
+            .lock()
+            .map_err(|_| {
+                MidgardError::Storage("workspace runtime credential store poisoned".to_string())
+            })?
+            .get(&workspace_id)
+            .cloned();
+
+        Ok(ciphertext.map(|ciphertext| WorkspaceRuntimeConfigSecret {
+            workspace_id,
+            view: workspace.runtime_config,
+            ciphertext,
+        }))
     }
 
     async fn list_workspaces(&self, organization_id: Uuid) -> MidgardResult<Vec<Workspace>> {
@@ -1208,8 +1250,20 @@ impl OrganizationStore for MemoryOrganizationStore {
         if let Some(archived) = update.archived {
             workspace.archived_at = archived.then(utc_now_rfc3339);
         }
+        let runtime_config_ciphertext = update
+            .runtime_config
+            .as_ref()
+            .map(|record| record.ciphertext.clone());
         if let Some(runtime_config) = update.runtime_config {
             workspace.runtime_config = runtime_config.view;
+        }
+        if let Some(ciphertext) = runtime_config_ciphertext {
+            self.workspace_runtime_ciphertexts
+                .lock()
+                .map_err(|_| {
+                    MidgardError::Storage("workspace runtime credential store poisoned".to_string())
+                })?
+                .insert(workspace.id, ciphertext);
         }
         workspace.updated_at = utc_now_rfc3339();
 
@@ -1604,18 +1658,21 @@ mod tests {
                 "",
                 vec![AgentToolCall::from_raw(
                     "call_1",
-                    "redis_describe",
-                    r#"{"namespace":"default","name":"cache"}"#,
+                    "docker_container_inspect",
+                    r#"{"container":"cache"}"#,
                 )],
             ));
 
         let saved = store.save_session(session).await.unwrap();
         let loaded = store.load_session(saved.id).await.unwrap().unwrap();
 
-        assert_eq!(loaded.messages[1].tool_calls[0].name, "redis_describe");
         assert_eq!(
-            loaded.messages[1].tool_calls[0].arguments["namespace"],
-            "default"
+            loaded.messages[1].tool_calls[0].name,
+            "docker_container_inspect"
+        );
+        assert_eq!(
+            loaded.messages[1].tool_calls[0].arguments["container"],
+            "cache"
         );
     }
 
@@ -1703,8 +1760,8 @@ mod tests {
         PendingApproval::new(
             AgentToolCall::from_raw(
                 "call_1",
-                "redis_restart",
-                r#"{"namespace":"default","name":"cache"}"#,
+                "docker_container_restart",
+                r#"{"container":"cache"}"#,
             ),
             RiskLevel::High,
         )
@@ -1842,6 +1899,54 @@ mod tests {
         assert_eq!(contexts[0].organization, organization);
         assert_eq!(contexts[0].membership, membership);
         assert_eq!(contexts[0].workspaces, vec![workspace]);
+    }
+
+    #[tokio::test]
+    async fn memory_organization_store_loads_runtime_secret_only_through_secret_path() {
+        let store = MemoryOrganizationStore::new();
+        let user_id = Uuid::new_v4();
+        let organization = store
+            .create_organization(NewOrganization {
+                slug: "platform-ops".to_string(),
+                name: "Platform Ops".to_string(),
+                created_by_user_id: user_id,
+            })
+            .await
+            .unwrap();
+        let runtime_view = crate::WorkspaceRuntimeConfigView {
+            mode: Some(crate::WorkspaceRuntimeMode::Docker),
+            status: crate::WorkspaceRuntimeConfigStatus::Configured,
+            updated_at: Some("2026-06-30T00:00:00Z".to_string()),
+            docker: Some(crate::DockerRuntimeConfigView {
+                configured: true,
+                endpoint_host: Some("docker.example.com".to_string()),
+                insecure_allowed: false,
+            }),
+            kubernetes: None,
+        };
+        let workspace = store
+            .create_workspace(NewWorkspace {
+                organization_id: organization.id,
+                slug: "operations".to_string(),
+                name: "Operations".to_string(),
+                runtime_config: Some(crate::WorkspaceRuntimeConfigRecord {
+                    view: runtime_view.clone(),
+                    ciphertext: "v1:nonce:ciphertext".to_string(),
+                }),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(workspace.runtime_config, runtime_view);
+        let loaded = store
+            .load_workspace_runtime_config_secret(workspace.id)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(loaded.workspace_id, workspace.id);
+        assert_eq!(loaded.view, runtime_view);
+        assert_eq!(loaded.ciphertext, "v1:nonce:ciphertext");
     }
 
     #[tokio::test]

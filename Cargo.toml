@@ -6,7 +6,7 @@ members = [
     "midgard-controller",
     "midgard-core",
     "midgard-k8s",
-    "midgard-plugin-example",
+    "midgard-docker",
     "midgard-protocol",
     "midgard-server",
     "midgard-storage",
@@ -41,7 +41,7 @@ midgard-agent = { path = "midgard-agent" }
 midgard-config = { path = "midgard-config" }
 midgard-controller = { path = "midgard-controller" }
 midgard-core = { path = "midgard-core" }
-midgard-plugin-example = { path = "midgard-plugin-example" }
+midgard-docker = { path = "midgard-docker" }
 midgard-protocol = { path = "midgard-protocol" }
 midgard-server = { path = "midgard-server" }
 midgard-tools = { path = "midgard-tools" }
@@ -51,6 +51,7 @@ prost = "0.14"
 prost-types = "0.14"
 rand = "0.8"
 redis = { version = "1.2.2", default-features = false, features = ["acl", "aio", "tokio-comp", "tokio-rustls-comp"] }
+bollard = { version = "0.21.0", default-features = false, features = ["http", "ssl"] }
 reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"], default-features = false }
 schemars = "1.0"
 serde = { version = "1", features = ["derive"] }

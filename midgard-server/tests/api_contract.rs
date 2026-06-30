@@ -6,7 +6,10 @@ use axum::{
         header::{COOKIE, SET_COOKIE},
     },
 };
-use midgard_agent::{AgentToolCall, LlmProvider, LlmResponse, ScriptedLlmProvider};
+use midgard_agent::{
+    AgentToolCall, LlmProvider, LlmRequest, LlmResponse, LlmStream, LlmStreamEvent,
+    ScriptedLlmProvider,
+};
 use midgard_server::{
     AuthSettings, WorkspaceCredentialSettings, app, app_with_provider_auth_orgs_and_credentials,
 };
@@ -16,7 +19,7 @@ use midgard_storage::{
     UserRole, hash_password,
 };
 use serde_json::Value;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::time::{Duration, sleep};
 use tower::ServiceExt;
 
@@ -103,6 +106,53 @@ fn workspace_uri(suffix: &str) -> String {
     format!("/api/orgs/{TEST_ORG}/workspaces/{TEST_WORKSPACE}{suffix}")
 }
 
+fn workspace_slug_uri(workspace_slug: &str, suffix: &str) -> String {
+    format!("/api/orgs/{TEST_ORG}/workspaces/{workspace_slug}{suffix}")
+}
+
+async fn configure_default_workspace_for_docker(app: &Router, cookie: &str) {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(workspace_uri(""))
+                .header(COOKIE, cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"runtime_config":{"mode":"docker","docker_api_url":"https://docker.example.com:2376"}}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+async fn create_kubernetes_workspace(app: &Router, cookie: &str) -> String {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/orgs/{TEST_ORG}/workspaces"))
+                .header(COOKIE, cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"name":"Kubernetes Runtime","runtime_config":{"mode":"kubernetes","kubeconfig":"apiVersion: v1\nkind: Config\ncurrent-context: test\ncontexts:\n- name: test\n  context:\n    cluster: test\nclusters:\n- name: test\n  cluster:\n    server: https://kubernetes.example.com"}}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let workspace: Value = serde_json::from_slice(&body).unwrap();
+
+    workspace["slug"].as_str().unwrap().to_string()
+}
+
 async fn login_cookie(app: &Router, email: &str, password: &str) -> String {
     let response = app
         .clone()
@@ -129,6 +179,38 @@ async fn login_cookie(app: &Router, email: &str, password: &str) -> String {
         .next()
         .unwrap()
         .to_string()
+}
+
+#[derive(Clone, Default)]
+struct CapturingLlmProvider {
+    tool_names: Arc<Mutex<Vec<Vec<String>>>>,
+}
+
+impl CapturingLlmProvider {
+    fn captured_tool_names(&self) -> Vec<Vec<String>> {
+        self.tool_names.lock().unwrap().clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl LlmProvider for CapturingLlmProvider {
+    async fn complete(&self, request: LlmRequest) -> midgard_core::MidgardResult<LlmResponse> {
+        self.tool_names
+            .lock()
+            .unwrap()
+            .push(request.tools.into_iter().map(|tool| tool.name).collect());
+        Ok(LlmResponse::text("ok"))
+    }
+
+    fn stream(&self, request: LlmRequest) -> LlmStream {
+        self.tool_names
+            .lock()
+            .unwrap()
+            .push(request.tools.into_iter().map(|tool| tool.name).collect());
+        Box::pin(tokio_stream::iter([Ok(LlmStreamEvent::MessageDone(
+            LlmResponse::text("ok"),
+        ))]))
+    }
 }
 
 #[tokio::test]
@@ -808,13 +890,14 @@ async fn organization_owner_role_must_retain_all_permissions() {
 }
 
 #[tokio::test]
-async fn tools_endpoint_lists_registered_tools() {
-    let (app, cookie, _) = app_with_role(UserRole::Viewer).await;
+async fn tools_endpoint_filters_docker_tools_by_runtime() {
+    let (app, cookie, _) = app_with_role(UserRole::Admin).await;
     let response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .uri(workspace_uri("/tools"))
-                .header(COOKIE, cookie)
+                .header(COOKIE, cookie.clone())
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -823,13 +906,12 @@ async fn tools_endpoint_lists_registered_tools() {
     let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     let json: Value = serde_json::from_slice(&body).unwrap();
 
-    assert!(
-        json.as_array()
-            .unwrap()
-            .iter()
-            .any(|tool| tool["name"] == "redis_describe")
-    );
     let tools = json.as_array().unwrap();
+    assert!(
+        !tools
+            .iter()
+            .any(|tool| tool["name"].as_str().unwrap().starts_with("docker_"))
+    );
     let create_tool = tools
         .iter()
         .find(|tool| tool["name"] == "middleware_create")
@@ -842,11 +924,89 @@ async fn tools_endpoint_lists_registered_tools() {
         .unwrap();
     assert_eq!(delete_tool["risk_level"], "critical");
     assert_eq!(delete_tool["requires_approval"], true);
+
+    configure_default_workspace_for_docker(&app, &cookie).await;
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(workspace_uri("/tools"))
+                .header(COOKIE, cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    let tools = json.as_array().unwrap();
+    let docker_info = tools
+        .iter()
+        .find(|tool| tool["name"] == "docker_info")
+        .unwrap();
+    assert_eq!(docker_info["risk_level"], "low");
+    assert_eq!(docker_info["requires_approval"], false);
+    assert!(
+        !docker_info["parameters_schema"]["properties"]
+            .as_object()
+            .unwrap()
+            .contains_key("workspace_id")
+    );
+    let docker_restart = tools
+        .iter()
+        .find(|tool| tool["name"] == "docker_container_restart")
+        .unwrap();
+    assert_eq!(docker_restart["risk_level"], "high");
+    assert_eq!(docker_restart["requires_approval"], true);
+    let docker_prune = tools
+        .iter()
+        .find(|tool| tool["name"] == "docker_system_prune")
+        .unwrap();
+    assert_eq!(docker_prune["risk_level"], "critical");
+    assert_eq!(docker_prune["requires_approval"], true);
+
+    let kubernetes_slug = create_kubernetes_workspace(&app, &cookie).await;
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(workspace_slug_uri(&kubernetes_slug, "/tools"))
+                .header(COOKIE, cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    assert!(
+        !json
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tool| tool["name"].as_str().unwrap().starts_with("docker_"))
+    );
 }
 
 #[tokio::test]
-async fn plugins_endpoint_lists_example_plugin() {
-    let (app, cookie, _) = app_with_role(UserRole::Viewer).await;
+async fn plugins_endpoint_filters_docker_plugin_by_runtime() {
+    let (app, cookie, _) = app_with_role(UserRole::Admin).await;
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(workspace_uri("/plugins"))
+                .header(COOKIE, cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(json.as_array().unwrap().len(), 0);
+
+    configure_default_workspace_for_docker(&app, &cookie).await;
     let response = app
         .oneshot(
             Request::builder()
@@ -860,7 +1020,8 @@ async fn plugins_endpoint_lists_example_plugin() {
     let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     let json: Value = serde_json::from_slice(&body).unwrap();
 
-    assert_eq!(json[0]["id"], "example-redis");
+    assert_eq!(json[0]["id"], "midgard-docker");
+    assert_eq!(json[0]["middleware_kind"], "docker");
 }
 
 #[tokio::test]
@@ -1051,6 +1212,57 @@ async fn run_endpoint_executes_agent_loop_and_persists_trace() {
 }
 
 #[tokio::test]
+async fn agent_run_passes_docker_workspace_tools_to_llm() {
+    let provider = Arc::new(CapturingLlmProvider::default());
+    let (app, cookie, _) = app_with_role_and_provider(UserRole::Admin, provider.clone()).await;
+    configure_default_workspace_for_docker(&app, &cookie).await;
+
+    let create_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(workspace_uri("/agent/sessions"))
+                .header(COOKIE, cookie.clone())
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"goal":"inspect docker"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create_response.status(), StatusCode::OK);
+    let body = to_bytes(create_response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let created: Value = serde_json::from_slice(&body).unwrap();
+    let id = created["id"].as_str().unwrap();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(workspace_uri(&format!("/agent/sessions/{id}/runs")))
+                .header(COOKIE, cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+
+    sleep(Duration::from_millis(20)).await;
+    let captured = provider.captured_tool_names();
+    assert!(!captured.is_empty());
+    assert!(captured[0].iter().any(|name| name == "complete_task"));
+    assert!(captured[0].iter().any(|name| name == "docker_info"));
+    assert!(
+        captured[0]
+            .iter()
+            .any(|name| name == "docker_container_restart")
+    );
+}
+
+#[tokio::test]
 async fn stream_endpoint_emits_ordered_sse_run_events() {
     let (app, cookie, _) = app_with_role_and_provider(
         UserRole::Operator,
@@ -1082,13 +1294,14 @@ async fn stream_endpoint_emits_ordered_sse_run_events() {
 
 #[tokio::test]
 async fn workspace_events_endpoint_emits_connected_snapshot() {
-    let (app, cookie, _) = app_with_role(UserRole::Viewer).await;
+    let (app, cookie, _) = app_with_role(UserRole::Admin).await;
 
     let response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .uri(workspace_uri("/events?once=true"))
-                .header(COOKIE, cookie)
+                .header(COOKIE, cookie.clone())
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1102,32 +1315,42 @@ async fn workspace_events_endpoint_emits_connected_snapshot() {
     assert!(text.contains("\"protocol_version\":1"));
     assert!(text.contains("\"current_permissions\""));
     assert!(text.contains("event: middleware_snapshot"));
+    assert!(!text.contains("docker_info"));
+    assert!(!text.contains("midgard-docker"));
+
+    configure_default_workspace_for_docker(&app, &cookie).await;
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(workspace_uri("/events?once=true"))
+                .header(COOKIE, cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let text = String::from_utf8(body.to_vec()).unwrap();
+
+    assert!(text.contains("docker_info"));
+    assert!(text.contains("midgard-docker"));
 }
 
 #[tokio::test]
-async fn approval_endpoint_records_decision_and_next_run_resumes() {
+async fn approval_endpoint_records_docker_tool_decision_without_execution() {
     let (app, cookie, _) = app_with_role_and_provider(
-        UserRole::Operator,
-        Arc::new(ScriptedLlmProvider::new([
-            LlmResponse::with_tool_calls(
-                "",
-                vec![AgentToolCall::from_raw(
-                    "call_1",
-                    "redis_restart",
-                    r#"{"namespace":"default","name":"cache"}"#,
-                )],
-            ),
-            LlmResponse::with_tool_calls(
-                "",
-                vec![AgentToolCall::from_raw(
-                    "call_2",
-                    "complete_task",
-                    r#"{"summary":"Restart requested"}"#,
-                )],
-            ),
-        ])),
+        UserRole::Admin,
+        Arc::new(ScriptedLlmProvider::single(LlmResponse::with_tool_calls(
+            "",
+            vec![AgentToolCall::from_raw(
+                "call_1",
+                "docker_container_restart",
+                r#"{"container":"cache"}"#,
+            )],
+        ))),
     )
     .await;
+    configure_default_workspace_for_docker(&app, &cookie).await;
     let id = uuid::Uuid::new_v4();
     let create = app
         .clone()
@@ -1137,7 +1360,7 @@ async fn approval_endpoint_records_decision_and_next_run_resumes() {
                 .uri(workspace_uri(&format!("/agent/sessions/{id}/messages")))
                 .header(COOKIE, cookie.clone())
                 .header("content-type", "application/json")
-                .body(Body::from(r#"{"message":"restart redis"}"#))
+                .body(Body::from(r#"{"message":"restart docker container"}"#))
                 .unwrap(),
         )
         .await
@@ -1178,7 +1401,7 @@ async fn approval_endpoint_records_decision_and_next_run_resumes() {
     let history: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(history.as_array().unwrap().len(), 1);
     assert_eq!(history[0]["status"], "pending");
-    assert_eq!(history[0]["tool_call"]["name"], "redis_restart");
+    assert_eq!(history[0]["tool_call"]["name"], "docker_container_restart");
 
     let approval = app
         .clone()
@@ -1189,7 +1412,7 @@ async fn approval_endpoint_records_decision_and_next_run_resumes() {
                 .header(COOKIE, cookie.clone())
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    r#"{"decision":"approve","reason":"maintenance window"}"#,
+                    r#"{"decision":"approve","reason":"maintenance window","resume":false}"#,
                 ))
                 .unwrap(),
         )
@@ -1230,8 +1453,7 @@ async fn approval_endpoint_records_decision_and_next_run_resumes() {
     let body = to_bytes(events.into_body(), usize::MAX).await.unwrap();
     let text = String::from_utf8(body.to_vec()).unwrap();
     assert!(text.contains("event: approval_decided"));
-    assert!(text.contains("event: agent_run_completed"));
-    assert!(text.contains("Restart requested"));
+    assert!(!text.contains("event: agent_run_completed"));
 
     let history = app
         .oneshot(
