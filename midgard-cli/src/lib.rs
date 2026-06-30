@@ -209,7 +209,7 @@ where
 
 async fn run_cli(cli: Cli) -> Result<()> {
     match cli.command.unwrap_or(Command::Server) {
-        Command::Server => run_server(cli.config.as_deref()).await,
+        Command::Server => run_server(cli.config.as_deref(), cli.project_root.as_deref()).await,
         Command::Config {
             command: ConfigCommand::Init { force },
         } => {
@@ -260,7 +260,7 @@ async fn run_valkey_operator(args: ValkeyOperatorArgs) -> Result<()> {
     Ok(())
 }
 
-async fn run_server(config_path: Option<&Path>) -> Result<()> {
+async fn run_server(config_path: Option<&Path>, project_root: Option<&Path>) -> Result<()> {
     init_tracing();
     let loaded = load_or_create(config_path)?;
     let database_url = loaded.config.require_database_url()?;
@@ -271,6 +271,8 @@ async fn run_server(config_path: Option<&Path>) -> Result<()> {
         .bind_address
         .parse()
         .with_context(|| format!("invalid server.bind_address in {}", loaded.path.display()))?;
+    let operator_address = operator_bind_address(&loaded.config.operator_control, &loaded.path)?;
+    let migration_summary = apply_startup_migrations(database_url, project_root).await?;
 
     let store = Arc::new(PostgresAgentSessionStore::connect(database_url).await?);
     let provider = OpenAiCompatibleProvider::new(
@@ -286,7 +288,6 @@ async fn run_server(config_path: Option<&Path>) -> Result<()> {
     let listener = tokio::net::TcpListener::bind(address)
         .await
         .with_context(|| format!("bind Midgard server to {address}"))?;
-    let operator_address = operator_bind_address(&loaded.config.operator_control, &loaded.path)?;
 
     let workspace_credentials = WorkspaceCredentialSettings::new(Some(
         loaded.config.secrets.workspace_credentials_key.clone(),
@@ -310,7 +311,8 @@ async fn run_server(config_path: Option<&Path>) -> Result<()> {
             &loaded.path,
             loaded.created,
             address,
-            operator_address
+            operator_address,
+            &migration_summary,
         )
     );
 
@@ -326,6 +328,41 @@ async fn run_server(config_path: Option<&Path>) -> Result<()> {
     } else {
         http_server.await.context("serve Midgard API")
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct StartupMigrationSummary {
+    project_root: PathBuf,
+    migration_path: PathBuf,
+}
+
+async fn apply_startup_migrations(
+    database_url: &str,
+    project_root: Option<&Path>,
+) -> Result<StartupMigrationSummary> {
+    let project_root = absolute_project_root(project_root)?;
+    let config = load_toasty_config(&project_root)?;
+    let migration_path = config.migration.path.clone();
+
+    tracing::info!(
+        project_root = %project_root.display(),
+        migrations = %migration_path.display(),
+        "applying database migrations before server startup"
+    );
+
+    let db = connect_database(database_url).await?;
+    let cli = ToastyCli::with_config(db, config);
+    cli.parse_from(toasty_args(MigrateCommand::Apply)).await?;
+
+    tracing::info!(
+        migrations = %migration_path.display(),
+        "database migrations applied"
+    );
+
+    Ok(StartupMigrationSummary {
+        project_root,
+        migration_path,
+    })
 }
 
 fn operator_bind_address(
@@ -383,6 +420,7 @@ fn server_startup_summary(
     config_created: bool,
     http_address: SocketAddr,
     operator_address: Option<SocketAddr>,
+    migration_summary: &StartupMigrationSummary,
 ) -> String {
     let operator_status = match operator_address {
         Some(address) => format!(
@@ -418,6 +456,17 @@ fn server_startup_summary(
                 config.auth.cookie_same_site,
                 config.auth.cookie_secure
             ),
+        ),
+        (
+            "Migrations",
+            format!(
+                "applied from {}",
+                migration_summary.migration_path.display()
+            ),
+        ),
+        (
+            "Project root",
+            migration_summary.project_root.display().to_string(),
         ),
         ("Operator gRPC", operator_status),
     ];
@@ -714,6 +763,10 @@ mod tests {
             false,
             "127.0.0.1:8080".parse().unwrap(),
             Some("127.0.0.1:8081".parse().unwrap()),
+            &StartupMigrationSummary {
+                project_root: PathBuf::from("/tmp/midgard"),
+                migration_path: PathBuf::from("/tmp/midgard/midgard-storage/toasty"),
+            },
         );
 
         assert!(summary.contains("+"));
@@ -722,6 +775,9 @@ mod tests {
         assert!(summary.contains("http://127.0.0.1:8080"));
         assert!(summary.contains("Config"));
         assert!(summary.contains("/tmp/midgard/config.toml (loaded)"));
+        assert!(summary.contains("Migrations"));
+        assert!(summary.contains("applied from /tmp/midgard/midgard-storage/toasty"));
+        assert!(summary.contains("Project root"));
         assert!(summary.contains("Operator gRPC"));
         assert!(summary.contains("enabled on 127.0.0.1:8081 (insecure, 1 registration token)"));
         assert!(!summary.contains("postgres://"));
@@ -763,6 +819,37 @@ mod tests {
             .unwrap_err();
 
         assert!(err.to_string().contains("database.url is empty"));
+    }
+
+    #[tokio::test]
+    async fn server_requires_startup_migration_config_before_binding() {
+        let dir = tempdir().unwrap();
+        let config_path = dir.path().join("config.toml");
+        let mut config = MidgardConfig::default_for_new_file();
+        config.database.url = "postgres://midgard:secret@127.0.0.1/midgard".to_string();
+        config.server.bind_address = "127.0.0.1:0".to_string();
+        fs::write(&config_path, toml::to_string_pretty(&config).unwrap()).unwrap();
+
+        let err = run_from([
+            "midgard",
+            "--config",
+            config_path.to_str().unwrap(),
+            "--project-root",
+            dir.path().to_str().unwrap(),
+            "server",
+        ])
+        .await
+        .unwrap_err();
+        let error = format!("{err:#}");
+
+        assert!(error.contains("load Toasty.toml"));
+        assert!(error.contains(&format!(
+            "{}",
+            dir.path().join("midgard-storage/Toasty.toml").display()
+        )));
+        assert!(!error.contains("bind Midgard server"));
+        assert!(!error.contains("postgres://"));
+        assert!(!error.contains("secret"));
     }
 
     #[tokio::test]
@@ -858,7 +945,7 @@ statement_breakpoints = true
         let dir = tempdir().unwrap();
         let config_path = dir.path().join("config.toml");
         let mut config = MidgardConfig::default_for_new_file();
-        config.database.url = database_url;
+        config.database.url = database_url.clone();
         fs::write(&config_path, toml::to_string_pretty(&config).unwrap()).unwrap();
         fs::create_dir_all(dir.path().join("midgard-storage")).unwrap();
         fs::write(
@@ -883,5 +970,9 @@ statement_breakpoints = true
         ])
         .await
         .unwrap();
+
+        apply_startup_migrations(&database_url, Some(dir.path()))
+            .await
+            .unwrap();
     }
 }
