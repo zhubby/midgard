@@ -2,7 +2,8 @@ use anyhow::{Context, Result};
 use clap::{Args as ClapArgs, Parser, Subcommand};
 use midgard_agent::OpenAiCompatibleProvider;
 use midgard_config::{
-    OperatorControlConfig, default_config_path, ensure_default_config, load_or_create,
+    MidgardConfig, OperatorControlConfig, default_config_path, ensure_default_config,
+    load_or_create,
 };
 use midgard_server::{
     AuthSettings, OperatorControlService, OperatorRegistrationToken, OperatorRegistry,
@@ -25,6 +26,7 @@ use toasty_cli::{Config as ToastyConfig, ToastyCli};
 use tonic::transport::{Identity, Server as GrpcServer, ServerTlsConfig};
 
 const STORAGE_TOASTY_CONFIG: &str = "midgard-storage/Toasty.toml";
+const STARTUP_SUMMARY_VALUE_WIDTH: usize = 72;
 
 #[derive(Debug, Parser)]
 #[command(name = "midgard")]
@@ -284,8 +286,8 @@ async fn run_server(config_path: Option<&Path>) -> Result<()> {
     let listener = tokio::net::TcpListener::bind(address)
         .await
         .with_context(|| format!("bind Midgard server to {address}"))?;
+    let operator_address = operator_bind_address(&loaded.config.operator_control, &loaded.path)?;
 
-    tracing::info!(%address, config = %loaded.path.display(), "midgard server listening");
     let workspace_credentials = WorkspaceCredentialSettings::new(Some(
         loaded.config.secrets.workspace_credentials_key.clone(),
     ));
@@ -301,19 +303,18 @@ async fn run_server(config_path: Option<&Path>) -> Result<()> {
     );
     let http_server = axum::serve(listener, app_with_state(app_state.clone()));
 
-    if loaded.config.operator_control.enabled {
-        let operator_address: SocketAddr = loaded
-            .config
-            .operator_control
-            .bind_address
-            .parse()
-            .with_context(|| {
-                format!(
-                    "invalid operator_control.bind_address in {}",
-                    loaded.path.display()
-                )
-            })?;
-        tracing::info!(%operator_address, "midgard operator gRPC listening");
+    tracing::info!(
+        "\n{}",
+        server_startup_summary(
+            &loaded.config,
+            &loaded.path,
+            loaded.created,
+            address,
+            operator_address
+        )
+    );
+
+    if let Some(operator_address) = operator_address {
         let operator_server = operator_grpc_server(&loaded.config.operator_control)?
             .add_service(OperatorControlService::new(app_state).into_server())
             .serve(operator_address);
@@ -325,6 +326,22 @@ async fn run_server(config_path: Option<&Path>) -> Result<()> {
     } else {
         http_server.await.context("serve Midgard API")
     }
+}
+
+fn operator_bind_address(
+    config: &OperatorControlConfig,
+    config_path: &Path,
+) -> Result<Option<SocketAddr>> {
+    if !config.enabled {
+        return Ok(None);
+    }
+
+    config.bind_address.parse().map(Some).with_context(|| {
+        format!(
+            "invalid operator_control.bind_address in {}",
+            config_path.display()
+        )
+    })
 }
 
 fn operator_registry_from_config(config: &OperatorControlConfig) -> OperatorRegistry {
@@ -358,6 +375,111 @@ fn operator_grpc_server(config: &OperatorControlConfig) -> Result<GrpcServer> {
     Ok(server.tls_config(
         ServerTlsConfig::new().identity(Identity::from_pem(certificate, private_key)),
     )?)
+}
+
+fn server_startup_summary(
+    config: &MidgardConfig,
+    config_path: &Path,
+    config_created: bool,
+    http_address: SocketAddr,
+    operator_address: Option<SocketAddr>,
+) -> String {
+    let operator_status = match operator_address {
+        Some(address) => format!(
+            "enabled on {address} ({}, {})",
+            operator_security_label(&config.operator_control),
+            pluralize_count(
+                config.operator_control.registration_tokens.len(),
+                "registration token"
+            ),
+        ),
+        None => "disabled".to_string(),
+    };
+    let rows = [
+        ("HTTP API", format!("http://{http_address}")),
+        (
+            "Config",
+            format!(
+                "{} ({})",
+                config_path.display(),
+                if config_created { "created" } else { "loaded" }
+            ),
+        ),
+        (
+            "LLM",
+            format!("{} @ {}", config.llm.model, config.llm.base_url),
+        ),
+        (
+            "Auth",
+            format!(
+                "cookie={}, ttl={}h, same_site={}, secure={}",
+                config.auth.cookie_name,
+                config.auth.session_ttl_hours,
+                config.auth.cookie_same_site,
+                config.auth.cookie_secure
+            ),
+        ),
+        ("Operator gRPC", operator_status),
+    ];
+
+    render_startup_box("Midgard server startup", &rows)
+}
+
+fn render_startup_box(title: &str, rows: &[(&str, String)]) -> String {
+    let label_width = rows
+        .iter()
+        .map(|(label, _)| label.len())
+        .max()
+        .unwrap_or_default();
+    let content_width = label_width + 3 + STARTUP_SUMMARY_VALUE_WIDTH;
+    let border = format!("+{}+", "-".repeat(content_width + 2));
+    let mut output = String::new();
+
+    output.push_str(&border);
+    output.push('\n');
+    output.push_str(&format!("| {:<width$} |\n", title, width = content_width));
+    output.push_str(&border);
+    for (label, value) in rows {
+        output.push('\n');
+        output.push_str(&format!(
+            "| {:<label_width$} : {:<value_width$} |",
+            label,
+            truncate_for_summary(value, STARTUP_SUMMARY_VALUE_WIDTH),
+            label_width = label_width,
+            value_width = STARTUP_SUMMARY_VALUE_WIDTH,
+        ));
+    }
+    output.push('\n');
+    output.push_str(&border);
+
+    output
+}
+
+fn truncate_for_summary(value: &str, max_width: usize) -> String {
+    if value.chars().count() <= max_width {
+        return value.to_string();
+    }
+    let prefix = value
+        .chars()
+        .take(max_width.saturating_sub(3))
+        .collect::<String>();
+    format!("{prefix}...")
+}
+
+fn operator_security_label(config: &OperatorControlConfig) -> &'static str {
+    if config.allow_insecure_without_tls {
+        "insecure"
+    } else {
+        "tls"
+    }
+}
+
+fn pluralize_count(count: usize, label: &str) -> String {
+    if count == 1 {
+        format!("{count} {label}")
+    } else {
+        format!("{count} {label}s")
+    }
 }
 
 async fn run_auth(config_path: Option<&Path>, command: AuthCommand) -> Result<()> {
@@ -569,6 +691,43 @@ mod tests {
         let err = Cli::try_parse_from(["midgard", "manager"]).unwrap_err();
 
         assert!(err.to_string().contains("unrecognized subcommand"));
+    }
+
+    #[test]
+    fn server_startup_summary_is_formatted_without_secrets() {
+        let mut config = MidgardConfig::default_for_new_file();
+        config.database.url = "postgres://midgard:secret@db.example.com/midgard".to_string();
+        config.llm.api_key = "sk-secret".to_string();
+        config.secrets.workspace_credentials_key = "workspace-secret".to_string();
+        config.auth.cookie_name = "midgard_session".to_string();
+        config.operator_control.enabled = true;
+        config.operator_control.allow_insecure_without_tls = true;
+        config.operator_control.registration_tokens =
+            vec![midgard_config::OperatorRegistrationTokenConfig {
+                workspace_id: "11111111-1111-1111-1111-111111111111".to_string(),
+                token: "operator-secret".to_string(),
+            }];
+
+        let summary = server_startup_summary(
+            &config,
+            Path::new("/tmp/midgard/config.toml"),
+            false,
+            "127.0.0.1:8080".parse().unwrap(),
+            Some("127.0.0.1:8081".parse().unwrap()),
+        );
+
+        assert!(summary.contains("+"));
+        assert!(summary.contains("Midgard server startup"));
+        assert!(summary.contains("HTTP API"));
+        assert!(summary.contains("http://127.0.0.1:8080"));
+        assert!(summary.contains("Config"));
+        assert!(summary.contains("/tmp/midgard/config.toml (loaded)"));
+        assert!(summary.contains("Operator gRPC"));
+        assert!(summary.contains("enabled on 127.0.0.1:8081 (insecure, 1 registration token)"));
+        assert!(!summary.contains("postgres://"));
+        assert!(!summary.contains("sk-secret"));
+        assert!(!summary.contains("workspace-secret"));
+        assert!(!summary.contains("operator-secret"));
     }
 
     #[tokio::test]
