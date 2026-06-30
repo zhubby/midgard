@@ -8,7 +8,7 @@ use midgard_agent::{
     AgentMessage, AgentRunEvent, AgentRunStatus, AgentSession, AgentToolCall, ApprovalRecord,
     PendingApproval,
 };
-use midgard_storage::{Organization, OrganizationMembership, Workspace};
+use midgard_storage::{Organization, OrganizationMembership, PermissionKey, Workspace};
 use midgard_tools::{ToolDefinition, ToolResult};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
@@ -25,6 +25,7 @@ pub struct WorkspaceSnapshot {
     pub organization: Organization,
     pub workspace: Workspace,
     pub current_membership: OrganizationMembership,
+    pub current_permissions: Vec<PermissionKey>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<AgentSession>,
     pub tools: Vec<ToolDefinition>,

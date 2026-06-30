@@ -20,6 +20,11 @@ use crate::{
         OrganizationContext, OrganizationMembership, OrganizationMembershipUpdate,
         OrganizationRole, Workspace, WorkspaceUpdate,
     },
+    rbac::{
+        builtin_organization_roles, legacy_organization_role_builtin_key,
+        legacy_user_role_builtin_key, NewRbacRole, PermissionKey, RbacRole, RbacRoleUpdate,
+        RbacScopeKind, ORG_OWNER_BUILTIN, SYSTEM_OWNER_BUILTIN,
+    },
     store::{AgentSessionStore, AuthStore, OrganizationStore},
 };
 
@@ -33,7 +38,7 @@ use codec::{
 pub use models::{
     storage_models, StoredAgentApprovalRecord, StoredAgentMessage, StoredAgentSession,
     StoredAuthAuditEvent, StoredAuthSession, StoredAuthUser, StoredOrganization,
-    StoredOrganizationMembership, StoredWorkspace,
+    StoredOrganizationMembership, StoredRbacRole, StoredRbacRolePermission, StoredWorkspace,
 };
 
 #[derive(Clone)]
@@ -180,6 +185,31 @@ impl AuthStore for PostgresAgentSessionStore {
                 "user already exists: {email_lower}"
             )));
         }
+        let system_role_id = match user.system_role_id {
+            Some(id) => {
+                let role = self
+                    .load_system_role(id)
+                    .await?
+                    .ok_or_else(|| MidgardError::Storage("system role not found".to_string()))?;
+                if role.archived_at.is_some() {
+                    return Err(MidgardError::Storage(
+                        "archived system role cannot be assigned".to_string(),
+                    ));
+                }
+                id
+            }
+            None => {
+                let builtin_key = legacy_user_role_builtin_key(&user.role);
+                self.load_system_role_by_builtin_key(builtin_key)
+                    .await?
+                    .ok_or_else(|| {
+                        MidgardError::Storage(format!(
+                            "builtin system role not found: {builtin_key}"
+                        ))
+                    })?
+                    .id
+            }
+        };
 
         let now = utc_now_rfc3339();
         let auth_user = AuthUser {
@@ -187,6 +217,7 @@ impl AuthStore for PostgresAgentSessionStore {
             email: email_lower,
             display_name: user.display_name.trim().to_string(),
             role: user.role,
+            system_role_id,
             active: user.active,
             created_at: now.clone(),
             updated_at: now,
@@ -196,13 +227,14 @@ impl AuthStore for PostgresAgentSessionStore {
         let mut db = self.db.clone();
         sql::statement(
             "INSERT INTO users
-                (id, email_lower, display_name, role, password_hash, active, created_at, updated_at, last_login_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+                (id, email_lower, display_name, role, system_role_id, password_hash, active, created_at, updated_at, last_login_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
         )
         .bind(auth_user.id)
         .bind(auth_user.email.clone())
         .bind(auth_user.display_name.clone())
         .bind(auth_user.role.as_str())
+        .bind(auth_user.system_role_id)
         .bind(user.password_hash)
         .bind(auth_user.active)
         .bind(auth_user.created_at.clone())
@@ -218,7 +250,7 @@ impl AuthStore for PostgresAgentSessionStore {
     async fn list_users(&self) -> MidgardResult<Vec<AuthUser>> {
         let mut db = self.db.clone();
         let rows = sql::query(
-            "SELECT id, email_lower, display_name, role, password_hash, active, created_at, updated_at, last_login_at
+            "SELECT id, email_lower, display_name, role, system_role_id, password_hash, active, created_at, updated_at, last_login_at
              FROM users
              ORDER BY email_lower ASC",
         )
@@ -236,7 +268,7 @@ impl AuthStore for PostgresAgentSessionStore {
     async fn load_user_by_id(&self, id: Uuid) -> MidgardResult<Option<AuthUser>> {
         let mut db = self.db.clone();
         let rows = sql::query(
-            "SELECT id, email_lower, display_name, role, password_hash, active, created_at, updated_at, last_login_at
+            "SELECT id, email_lower, display_name, role, system_role_id, password_hash, active, created_at, updated_at, last_login_at
              FROM users
              WHERE id = $1",
         )
@@ -257,7 +289,7 @@ impl AuthStore for PostgresAgentSessionStore {
         let mut db = self.db.clone();
         let email_lower = normalize_email(email_lower);
         let rows = sql::query(
-            "SELECT id, email_lower, display_name, role, password_hash, active, created_at, updated_at, last_login_at
+            "SELECT id, email_lower, display_name, role, system_role_id, password_hash, active, created_at, updated_at, last_login_at
              FROM users
              WHERE email_lower = $1",
         )
@@ -278,8 +310,32 @@ impl AuthStore for PostgresAgentSessionStore {
         id: Uuid,
         update: AuthUserUpdate,
     ) -> MidgardResult<Option<AuthUser>> {
-        if self.load_user_by_id(id).await?.is_none() {
+        let Some(current) = self.load_user_by_id(id).await? else {
             return Ok(None);
+        };
+        let next_system_role_id = match update.system_role_id {
+            Some(role_id) => {
+                let role = self
+                    .load_system_role(role_id)
+                    .await?
+                    .ok_or_else(|| MidgardError::Storage("system role not found".to_string()))?;
+                if role.archived_at.is_some() {
+                    return Err(MidgardError::Storage(
+                        "archived system role cannot be assigned".to_string(),
+                    ));
+                }
+                role_id
+            }
+            None => current.system_role_id,
+        };
+        let next_active = update.active.unwrap_or(current.active);
+        let removes_owner = current.active
+            && is_system_owner_role(self, current.system_role_id).await?
+            && (!next_active || !is_system_owner_role(self, next_system_role_id).await?);
+        if removes_owner && active_system_owner_count(self).await? <= 1 {
+            return Err(MidgardError::Storage(
+                "cannot remove or demote the last system owner".to_string(),
+            ));
         }
 
         let mut db = self.db.clone();
@@ -288,14 +344,16 @@ impl AuthStore for PostgresAgentSessionStore {
             "UPDATE users
              SET display_name = COALESCE($2, display_name),
                  role = COALESCE($3, role),
-                 password_hash = COALESCE($4, password_hash),
-                 active = COALESCE($5, active),
-                 updated_at = $6
+                 system_role_id = $4,
+                 password_hash = COALESCE($5, password_hash),
+                 active = COALESCE($6, active),
+                 updated_at = $7
              WHERE id = $1",
         )
         .bind(id)
         .bind(update.display_name.map(|value| value.trim().to_string()))
         .bind(update.role.map(|role| role.as_str().to_string()))
+        .bind(next_system_role_id)
         .bind(update.password_hash)
         .bind(update.active)
         .bind(updated_at)
@@ -359,7 +417,7 @@ impl AuthStore for PostgresAgentSessionStore {
     ) -> MidgardResult<Option<AuthUser>> {
         let mut db = self.db.clone();
         let rows = sql::query(
-            "SELECT u.id, u.email_lower, u.display_name, u.role, u.password_hash, u.active,
+            "SELECT u.id, u.email_lower, u.display_name, u.role, u.system_role_id, u.password_hash, u.active,
                     u.created_at, u.updated_at, u.last_login_at, s.expires_at
              FROM auth_sessions s
              JOIN users u ON u.id = s.user_id
@@ -371,6 +429,7 @@ impl AuthStore for PostgresAgentSessionStore {
             stmt::Type::String,
             stmt::Type::String,
             stmt::Type::String,
+            stmt::Type::Uuid,
             stmt::Type::String,
             stmt::Type::Bool,
             stmt::Type::String,
@@ -386,11 +445,11 @@ impl AuthStore for PostgresAgentSessionStore {
             return Ok(None);
         };
         let record = row.into_record();
-        let expires_at = string_from_value(&record[9])?;
+        let expires_at = string_from_value(&record[10])?;
         if parse_rfc3339_utc(expires_at)? <= now {
             return Ok(None);
         }
-        let auth_user = auth_user_record_from_record(&record[0..9])?.user;
+        let auth_user = auth_user_record_from_record(&record[0..10])?.user;
         if !auth_user.active {
             return Ok(None);
         }
@@ -435,6 +494,46 @@ impl AuthStore for PostgresAgentSessionStore {
 
         Ok(())
     }
+
+    async fn list_system_roles(&self) -> MidgardResult<Vec<RbacRole>> {
+        list_roles(self, RbacScopeKind::System, None).await
+    }
+
+    async fn load_system_role(&self, id: Uuid) -> MidgardResult<Option<RbacRole>> {
+        load_role_by_id(self, RbacScopeKind::System, None, id).await
+    }
+
+    async fn load_system_role_by_builtin_key(
+        &self,
+        builtin_key: &str,
+    ) -> MidgardResult<Option<RbacRole>> {
+        load_role_by_builtin_key(self, RbacScopeKind::System, None, builtin_key).await
+    }
+
+    async fn create_system_role(&self, role: NewRbacRole) -> MidgardResult<RbacRole> {
+        if role.scope_kind != RbacScopeKind::System || role.organization_id.is_some() {
+            return Err(MidgardError::Storage(
+                "system role must use system scope".to_string(),
+            ));
+        }
+        create_role(self, role).await
+    }
+
+    async fn update_system_role(
+        &self,
+        id: Uuid,
+        update: RbacRoleUpdate,
+    ) -> MidgardResult<Option<RbacRole>> {
+        update_role(self, RbacScopeKind::System, None, id, update).await
+    }
+
+    async fn replace_system_role_permissions(
+        &self,
+        id: Uuid,
+        permissions: Vec<PermissionKey>,
+    ) -> MidgardResult<Option<RbacRole>> {
+        replace_role_permissions(self, RbacScopeKind::System, None, id, permissions).await
+    }
 }
 
 #[async_trait]
@@ -478,6 +577,7 @@ impl OrganizationStore for PostgresAgentSessionStore {
         .exec(&mut db)
         .await
         .map_err(storage_error)?;
+        seed_builtin_organization_roles(self, created.id).await?;
 
         Ok(created)
     }
@@ -510,7 +610,7 @@ impl OrganizationStore for PostgresAgentSessionStore {
         let rows = sql::query(
             "SELECT
                 o.id, o.slug, o.name, o.created_by_user_id, o.archived_at, o.created_at, o.updated_at,
-                m.id, m.organization_id, m.user_id, m.role, m.active, m.joined_at, m.created_at, m.updated_at
+                m.id, m.organization_id, m.user_id, m.role, m.role_id, m.active, m.joined_at, m.created_at, m.updated_at
              FROM organization_memberships m
              JOIN organizations o ON o.id = m.organization_id
              WHERE m.user_id = $1 AND m.active = TRUE AND o.archived_at IS NULL
@@ -526,12 +626,14 @@ impl OrganizationStore for PostgresAgentSessionStore {
         for row in rows {
             let record = row.into_record();
             let organization = organization_from_record(&record[0..7])?;
-            let membership = membership_from_record(&record[7..15])?;
+            let membership = membership_from_record(&record[7..16])?;
+            let permissions = load_role_permissions(self, membership.role_id).await?;
             let workspaces = self.list_workspaces(organization.id).await?;
             contexts.push(OrganizationContext {
                 organization,
                 membership,
                 workspaces,
+                permissions,
             });
         }
 
@@ -546,6 +648,28 @@ impl OrganizationStore for PostgresAgentSessionStore {
         load_membership_with_store(self, organization_id, user_id, true).await
     }
 
+    async fn list_memberships(
+        &self,
+        organization_id: Uuid,
+    ) -> MidgardResult<Vec<OrganizationMembership>> {
+        let mut db = self.db.clone();
+        let rows = sql::query(
+            "SELECT id, organization_id, user_id, role, role_id, active, joined_at, created_at, updated_at
+             FROM organization_memberships
+             WHERE organization_id = $1
+             ORDER BY user_id ASC",
+        )
+        .bind(organization_id)
+        .column_types(membership_column_types())
+        .exec(&mut db)
+        .await
+        .map_err(storage_error)?;
+
+        rows.into_iter()
+            .map(membership_from_row)
+            .collect::<MidgardResult<Vec<_>>>()
+    }
+
     async fn create_membership(
         &self,
         membership: NewOrganizationMembership,
@@ -558,6 +682,33 @@ impl OrganizationStore for PostgresAgentSessionStore {
                 "organization membership already exists".to_string(),
             ));
         }
+        let role_id = match membership.role_id {
+            Some(role_id) => {
+                let role = self
+                    .load_organization_role(membership.organization_id, role_id)
+                    .await?
+                    .ok_or_else(|| {
+                        MidgardError::Storage("organization role not found".to_string())
+                    })?;
+                if role.archived_at.is_some() {
+                    return Err(MidgardError::Storage(
+                        "archived organization role cannot be assigned".to_string(),
+                    ));
+                }
+                role_id
+            }
+            None => {
+                let builtin_key = legacy_organization_role_builtin_key(&membership.role);
+                self.load_organization_role_by_builtin_key(membership.organization_id, builtin_key)
+                    .await?
+                    .ok_or_else(|| {
+                        MidgardError::Storage(format!(
+                            "builtin organization role not found: {builtin_key}"
+                        ))
+                    })?
+                    .id
+            }
+        };
 
         let now = utc_now_rfc3339();
         let created = OrganizationMembership {
@@ -565,6 +716,7 @@ impl OrganizationStore for PostgresAgentSessionStore {
             organization_id: membership.organization_id,
             user_id: membership.user_id,
             role: membership.role,
+            role_id,
             active: membership.active,
             joined_at: now.clone(),
             created_at: now.clone(),
@@ -574,13 +726,14 @@ impl OrganizationStore for PostgresAgentSessionStore {
         let mut db = self.db.clone();
         sql::statement(
             "INSERT INTO organization_memberships
-                (id, organization_id, user_id, role, active, joined_at, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+                (id, organization_id, user_id, role, role_id, active, joined_at, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
         )
         .bind(created.id)
         .bind(created.organization_id)
         .bind(created.user_id)
         .bind(created.role.as_str())
+        .bind(created.role_id)
         .bind(created.active)
         .bind(created.joined_at.clone())
         .bind(created.created_at.clone())
@@ -604,12 +757,43 @@ impl OrganizationStore for PostgresAgentSessionStore {
             return Ok(None);
         };
 
-        let owner_count = active_owner_count(self, organization_id).await?;
+        let next_role_id = match update.role_id {
+            Some(role_id) => {
+                let role = self
+                    .load_organization_role(organization_id, role_id)
+                    .await?
+                    .ok_or_else(|| {
+                        MidgardError::Storage("organization role not found".to_string())
+                    })?;
+                if role.archived_at.is_some() {
+                    return Err(MidgardError::Storage(
+                        "archived organization role cannot be assigned".to_string(),
+                    ));
+                }
+                role_id
+            }
+            None => {
+                if let Some(role) = &update.role {
+                    let builtin_key = legacy_organization_role_builtin_key(role);
+                    self.load_organization_role_by_builtin_key(organization_id, builtin_key)
+                        .await?
+                        .ok_or_else(|| {
+                            MidgardError::Storage(format!(
+                                "builtin organization role not found: {builtin_key}"
+                            ))
+                        })?
+                        .id
+                } else {
+                    membership.role_id
+                }
+            }
+        };
+        let next_active = update.active.unwrap_or(membership.active);
         let removes_owner = membership.active
-            && membership.role.is_owner()
-            && (update.active == Some(false)
-                || update.role.as_ref().is_some_and(|role| !role.is_owner()));
-        if removes_owner && owner_count <= 1 {
+            && is_organization_owner_role(self, organization_id, membership.role_id).await?
+            && (!next_active
+                || !is_organization_owner_role(self, organization_id, next_role_id).await?);
+        if removes_owner && active_organization_owner_count(self, organization_id).await? <= 1 {
             return Err(MidgardError::Storage(
                 "cannot remove or demote the last organization owner".to_string(),
             ));
@@ -618,6 +802,7 @@ impl OrganizationStore for PostgresAgentSessionStore {
         if let Some(role) = update.role {
             membership.role = role;
         }
+        membership.role_id = next_role_id;
         if let Some(active) = update.active {
             membership.active = active;
         }
@@ -626,12 +811,13 @@ impl OrganizationStore for PostgresAgentSessionStore {
         let mut db = self.db.clone();
         sql::statement(
             "UPDATE organization_memberships
-             SET role = $3, active = $4, updated_at = $5
+             SET role = $3, role_id = $4, active = $5, updated_at = $6
              WHERE organization_id = $1 AND user_id = $2",
         )
         .bind(organization_id)
         .bind(user_id)
         .bind(membership.role.as_str())
+        .bind(membership.role_id)
         .bind(membership.active)
         .bind(membership.updated_at.clone())
         .exec(&mut db)
@@ -761,14 +947,82 @@ impl OrganizationStore for PostgresAgentSessionStore {
 
         Ok(Some(workspace))
     }
+
+    async fn list_organization_roles(&self, organization_id: Uuid) -> MidgardResult<Vec<RbacRole>> {
+        list_roles(self, RbacScopeKind::Organization, Some(organization_id)).await
+    }
+
+    async fn load_organization_role(
+        &self,
+        organization_id: Uuid,
+        id: Uuid,
+    ) -> MidgardResult<Option<RbacRole>> {
+        load_role_by_id(self, RbacScopeKind::Organization, Some(organization_id), id).await
+    }
+
+    async fn load_organization_role_by_builtin_key(
+        &self,
+        organization_id: Uuid,
+        builtin_key: &str,
+    ) -> MidgardResult<Option<RbacRole>> {
+        load_role_by_builtin_key(
+            self,
+            RbacScopeKind::Organization,
+            Some(organization_id),
+            builtin_key,
+        )
+        .await
+    }
+
+    async fn create_organization_role(&self, role: NewRbacRole) -> MidgardResult<RbacRole> {
+        if role.scope_kind != RbacScopeKind::Organization || role.organization_id.is_none() {
+            return Err(MidgardError::Storage(
+                "organization role must use organization scope".to_string(),
+            ));
+        }
+        create_role(self, role).await
+    }
+
+    async fn update_organization_role(
+        &self,
+        organization_id: Uuid,
+        id: Uuid,
+        update: RbacRoleUpdate,
+    ) -> MidgardResult<Option<RbacRole>> {
+        update_role(
+            self,
+            RbacScopeKind::Organization,
+            Some(organization_id),
+            id,
+            update,
+        )
+        .await
+    }
+
+    async fn replace_organization_role_permissions(
+        &self,
+        organization_id: Uuid,
+        id: Uuid,
+        permissions: Vec<PermissionKey>,
+    ) -> MidgardResult<Option<RbacRole>> {
+        replace_role_permissions(
+            self,
+            RbacScopeKind::Organization,
+            Some(organization_id),
+            id,
+            permissions,
+        )
+        .await
+    }
 }
 
-fn auth_user_column_types() -> [stmt::Type; 9] {
+fn auth_user_column_types() -> [stmt::Type; 10] {
     [
         stmt::Type::Uuid,
         stmt::Type::String,
         stmt::Type::String,
         stmt::Type::String,
+        stmt::Type::Uuid,
         stmt::Type::String,
         stmt::Type::Bool,
         stmt::Type::String,
@@ -787,11 +1041,12 @@ fn auth_user_record_from_record(record: &[stmt::Value]) -> MidgardResult<AuthUse
     let email = string_from_value(&record[1])?.to_string();
     let display_name = string_from_value(&record[2])?.to_string();
     let role = crate::auth::UserRole::from_storage(string_from_value(&record[3])?)?;
-    let password_hash = string_from_value(&record[4])?.to_string();
-    let active = bool_from_value(&record[5])?;
-    let created_at = string_from_value(&record[6])?.to_string();
-    let updated_at = string_from_value(&record[7])?.to_string();
-    let last_login_at = optional_string_from_value(&record[8])?;
+    let system_role_id = uuid_from_value(&record[4])?;
+    let password_hash = string_from_value(&record[5])?.to_string();
+    let active = bool_from_value(&record[6])?;
+    let created_at = string_from_value(&record[7])?.to_string();
+    let updated_at = string_from_value(&record[8])?.to_string();
+    let last_login_at = optional_string_from_value(&record[9])?;
 
     Ok(AuthUserRecord {
         user: AuthUser {
@@ -799,6 +1054,7 @@ fn auth_user_record_from_record(record: &[stmt::Value]) -> MidgardResult<AuthUse
             email,
             display_name,
             role,
+            system_role_id,
             active,
             created_at,
             updated_at,
@@ -820,12 +1076,13 @@ fn organization_column_types() -> [stmt::Type; 7] {
     ]
 }
 
-fn membership_column_types() -> [stmt::Type; 8] {
+fn membership_column_types() -> [stmt::Type; 9] {
     [
         stmt::Type::Uuid,
         stmt::Type::Uuid,
         stmt::Type::Uuid,
         stmt::Type::String,
+        stmt::Type::Uuid,
         stmt::Type::Bool,
         stmt::Type::String,
         stmt::Type::String,
@@ -845,7 +1102,7 @@ fn workspace_column_types() -> [stmt::Type; 7] {
     ]
 }
 
-fn organization_context_column_types() -> [stmt::Type; 15] {
+fn organization_context_column_types() -> [stmt::Type; 16] {
     [
         stmt::Type::Uuid,
         stmt::Type::String,
@@ -858,6 +1115,7 @@ fn organization_context_column_types() -> [stmt::Type; 15] {
         stmt::Type::Uuid,
         stmt::Type::Uuid,
         stmt::Type::String,
+        stmt::Type::Uuid,
         stmt::Type::Bool,
         stmt::Type::String,
         stmt::Type::String,
@@ -893,10 +1151,11 @@ fn membership_from_record(record: &[stmt::Value]) -> MidgardResult<OrganizationM
         organization_id: uuid_from_value(&record[1])?,
         user_id: uuid_from_value(&record[2])?,
         role: OrganizationRole::from_storage(string_from_value(&record[3])?)?,
-        active: bool_from_value(&record[4])?,
-        joined_at: string_from_value(&record[5])?.to_string(),
-        created_at: string_from_value(&record[6])?.to_string(),
-        updated_at: string_from_value(&record[7])?.to_string(),
+        role_id: uuid_from_value(&record[4])?,
+        active: bool_from_value(&record[5])?,
+        joined_at: string_from_value(&record[6])?.to_string(),
+        created_at: string_from_value(&record[7])?.to_string(),
+        updated_at: string_from_value(&record[8])?.to_string(),
     })
 }
 
@@ -917,6 +1176,518 @@ fn workspace_from_record(record: &[stmt::Value]) -> MidgardResult<Workspace> {
     })
 }
 
+fn rbac_role_column_types() -> [stmt::Type; 11] {
+    [
+        stmt::Type::Uuid,
+        stmt::Type::String,
+        stmt::Type::Uuid,
+        stmt::Type::String,
+        stmt::Type::String,
+        stmt::Type::String,
+        stmt::Type::String,
+        stmt::Type::Bool,
+        stmt::Type::String,
+        stmt::Type::String,
+        stmt::Type::String,
+    ]
+}
+
+fn rbac_role_from_record(
+    record: &[stmt::Value],
+    permissions: Vec<PermissionKey>,
+) -> MidgardResult<RbacRole> {
+    Ok(RbacRole {
+        id: uuid_from_value(&record[0])?,
+        scope_kind: RbacScopeKind::from_storage(string_from_value(&record[1])?)?,
+        organization_id: optional_uuid_from_value(&record[2])?,
+        slug: string_from_value(&record[3])?.to_string(),
+        name: string_from_value(&record[4])?.to_string(),
+        description: optional_string_from_value(&record[5])?,
+        builtin_key: optional_string_from_value(&record[6])?,
+        protected: bool_from_value(&record[7])?,
+        archived_at: optional_string_from_value(&record[8])?,
+        created_at: string_from_value(&record[9])?.to_string(),
+        updated_at: string_from_value(&record[10])?.to_string(),
+        permissions,
+    })
+}
+
+async fn list_roles(
+    store: &PostgresAgentSessionStore,
+    scope_kind: RbacScopeKind,
+    organization_id: Option<Uuid>,
+) -> MidgardResult<Vec<RbacRole>> {
+    let mut db = store.db.clone();
+    let rows = match organization_id {
+        Some(organization_id) => {
+            sql::query(
+                "SELECT id, scope_kind, organization_id, slug, name, description, builtin_key, protected, archived_at, created_at, updated_at
+                 FROM rbac_roles
+                 WHERE scope_kind = $1 AND organization_id = $2
+                 ORDER BY slug ASC",
+            )
+            .bind(scope_kind.as_str())
+            .bind(organization_id)
+            .column_types(rbac_role_column_types())
+            .exec(&mut db)
+            .await
+            .map_err(storage_error)?
+        }
+        None => {
+            sql::query(
+                "SELECT id, scope_kind, organization_id, slug, name, description, builtin_key, protected, archived_at, created_at, updated_at
+                 FROM rbac_roles
+                 WHERE scope_kind = $1 AND organization_id IS NULL
+                 ORDER BY slug ASC",
+            )
+            .bind(scope_kind.as_str())
+            .column_types(rbac_role_column_types())
+            .exec(&mut db)
+            .await
+            .map_err(storage_error)?
+        }
+    };
+
+    let mut roles = Vec::with_capacity(rows.len());
+    for row in rows {
+        let record = row.into_record();
+        let id = uuid_from_value(&record[0])?;
+        let permissions = load_role_permissions(store, id).await?;
+        roles.push(rbac_role_from_record(&record, permissions)?);
+    }
+
+    Ok(roles)
+}
+
+async fn load_role_by_id(
+    store: &PostgresAgentSessionStore,
+    scope_kind: RbacScopeKind,
+    organization_id: Option<Uuid>,
+    id: Uuid,
+) -> MidgardResult<Option<RbacRole>> {
+    let mut db = store.db.clone();
+    let rows = match organization_id {
+        Some(organization_id) => {
+            sql::query(
+                "SELECT id, scope_kind, organization_id, slug, name, description, builtin_key, protected, archived_at, created_at, updated_at
+                 FROM rbac_roles
+                 WHERE id = $1 AND scope_kind = $2 AND organization_id = $3",
+            )
+            .bind(id)
+            .bind(scope_kind.as_str())
+            .bind(organization_id)
+            .column_types(rbac_role_column_types())
+            .exec(&mut db)
+            .await
+            .map_err(storage_error)?
+        }
+        None => {
+            sql::query(
+                "SELECT id, scope_kind, organization_id, slug, name, description, builtin_key, protected, archived_at, created_at, updated_at
+                 FROM rbac_roles
+                 WHERE id = $1 AND scope_kind = $2 AND organization_id IS NULL",
+            )
+            .bind(id)
+            .bind(scope_kind.as_str())
+            .column_types(rbac_role_column_types())
+            .exec(&mut db)
+            .await
+            .map_err(storage_error)?
+        }
+    };
+
+    let Some(row) = rows.into_iter().next() else {
+        return Ok(None);
+    };
+    let record = row.into_record();
+    let permissions = load_role_permissions(store, id).await?;
+    rbac_role_from_record(&record, permissions).map(Some)
+}
+
+async fn load_role_by_builtin_key(
+    store: &PostgresAgentSessionStore,
+    scope_kind: RbacScopeKind,
+    organization_id: Option<Uuid>,
+    builtin_key: &str,
+) -> MidgardResult<Option<RbacRole>> {
+    let mut db = store.db.clone();
+    let rows = match organization_id {
+        Some(organization_id) => {
+            sql::query(
+                "SELECT id, scope_kind, organization_id, slug, name, description, builtin_key, protected, archived_at, created_at, updated_at
+                 FROM rbac_roles
+                 WHERE scope_kind = $1 AND organization_id = $2 AND builtin_key = $3",
+            )
+            .bind(scope_kind.as_str())
+            .bind(organization_id)
+            .bind(builtin_key.to_string())
+            .column_types(rbac_role_column_types())
+            .exec(&mut db)
+            .await
+            .map_err(storage_error)?
+        }
+        None => {
+            sql::query(
+                "SELECT id, scope_kind, organization_id, slug, name, description, builtin_key, protected, archived_at, created_at, updated_at
+                 FROM rbac_roles
+                 WHERE scope_kind = $1 AND organization_id IS NULL AND builtin_key = $2",
+            )
+            .bind(scope_kind.as_str())
+            .bind(builtin_key.to_string())
+            .column_types(rbac_role_column_types())
+            .exec(&mut db)
+            .await
+            .map_err(storage_error)?
+        }
+    };
+
+    let Some(row) = rows.into_iter().next() else {
+        return Ok(None);
+    };
+    let record = row.into_record();
+    let id = uuid_from_value(&record[0])?;
+    let permissions = load_role_permissions(store, id).await?;
+    rbac_role_from_record(&record, permissions).map(Some)
+}
+
+async fn create_role(
+    store: &PostgresAgentSessionStore,
+    role: NewRbacRole,
+) -> MidgardResult<RbacRole> {
+    PermissionKey::validate_for_scope(&role.scope_kind, &role.permissions)?;
+    let slug = normalize_slug(&role.slug)?;
+    let name = required_name(&role.name, "role name")?;
+    if role_slug_exists(store, &role.scope_kind, role.organization_id, &slug).await? {
+        return Err(MidgardError::Storage(format!(
+            "RBAC role slug already exists: {slug}"
+        )));
+    }
+    let now = utc_now_rfc3339();
+    let created = RbacRole {
+        id: Uuid::new_v4(),
+        scope_kind: role.scope_kind,
+        organization_id: role.organization_id,
+        slug,
+        name,
+        description: role.description,
+        builtin_key: role.builtin_key,
+        protected: role.protected,
+        archived_at: None,
+        created_at: now.clone(),
+        updated_at: now,
+        permissions: sorted_permissions(role.permissions),
+    };
+    insert_role(store, &created).await?;
+    Ok(created)
+}
+
+async fn update_role(
+    store: &PostgresAgentSessionStore,
+    scope_kind: RbacScopeKind,
+    organization_id: Option<Uuid>,
+    id: Uuid,
+    update: RbacRoleUpdate,
+) -> MidgardResult<Option<RbacRole>> {
+    let Some(mut role) = load_role_by_id(store, scope_kind.clone(), organization_id, id).await?
+    else {
+        return Ok(None);
+    };
+    if update.archived == Some(true) && role.protected {
+        return Err(MidgardError::Storage(
+            "protected RBAC role cannot be archived".to_string(),
+        ));
+    }
+    if let Some(name) = update.name {
+        role.name = required_name(&name, "role name")?;
+    }
+    if let Some(description) = update.description {
+        role.description = if description.trim().is_empty() {
+            None
+        } else {
+            Some(description.trim().to_string())
+        };
+    }
+    if let Some(archived) = update.archived {
+        role.archived_at = archived.then(utc_now_rfc3339);
+    }
+    role.updated_at = utc_now_rfc3339();
+
+    let mut db = store.db.clone();
+    sql::statement(
+        "UPDATE rbac_roles
+         SET name = $2, description = $3, archived_at = $4, updated_at = $5
+         WHERE id = $1",
+    )
+    .bind(role.id)
+    .bind(role.name.clone())
+    .bind(role.description.clone())
+    .bind(role.archived_at.clone())
+    .bind(role.updated_at.clone())
+    .exec(&mut db)
+    .await
+    .map_err(storage_error)?;
+
+    Ok(Some(role))
+}
+
+async fn replace_role_permissions(
+    store: &PostgresAgentSessionStore,
+    scope_kind: RbacScopeKind,
+    organization_id: Option<Uuid>,
+    id: Uuid,
+    permissions: Vec<PermissionKey>,
+) -> MidgardResult<Option<RbacRole>> {
+    PermissionKey::validate_for_scope(&scope_kind, &permissions)?;
+    let Some(mut role) = load_role_by_id(store, scope_kind, organization_id, id).await? else {
+        return Ok(None);
+    };
+    if role.archived_at.is_some() {
+        return Err(MidgardError::Storage(
+            "archived RBAC role permissions cannot be updated".to_string(),
+        ));
+    }
+    let permissions = sorted_permissions(permissions);
+    if role.builtin_key.as_deref() == Some(SYSTEM_OWNER_BUILTIN) {
+        require_all_permissions(&permissions, PermissionKey::system_permissions())?;
+    }
+    if role.builtin_key.as_deref() == Some(ORG_OWNER_BUILTIN) {
+        require_all_permissions(&permissions, PermissionKey::organization_permissions())?;
+    }
+
+    let mut db = store.db.clone();
+    sql::statement("DELETE FROM rbac_role_permissions WHERE role_id = $1")
+        .bind(id)
+        .exec(&mut db)
+        .await
+        .map_err(storage_error)?;
+    insert_role_permissions(store, id, &permissions).await?;
+    role.permissions = permissions;
+    role.updated_at = utc_now_rfc3339();
+    sql::statement("UPDATE rbac_roles SET updated_at = $2 WHERE id = $1")
+        .bind(role.id)
+        .bind(role.updated_at.clone())
+        .exec(&mut db)
+        .await
+        .map_err(storage_error)?;
+
+    Ok(Some(role))
+}
+
+async fn role_slug_exists(
+    store: &PostgresAgentSessionStore,
+    scope_kind: &RbacScopeKind,
+    organization_id: Option<Uuid>,
+    slug: &str,
+) -> MidgardResult<bool> {
+    let mut db = store.db.clone();
+    let rows = match organization_id {
+        Some(organization_id) => sql::query(
+            "SELECT id FROM rbac_roles WHERE scope_kind = $1 AND organization_id = $2 AND slug = $3",
+        )
+        .bind(scope_kind.as_str())
+        .bind(organization_id)
+        .bind(slug.to_string())
+        .column_types([stmt::Type::Uuid])
+        .exec(&mut db)
+        .await
+        .map_err(storage_error)?,
+        None => sql::query(
+            "SELECT id FROM rbac_roles WHERE scope_kind = $1 AND organization_id IS NULL AND slug = $2",
+        )
+        .bind(scope_kind.as_str())
+        .bind(slug.to_string())
+        .column_types([stmt::Type::Uuid])
+        .exec(&mut db)
+        .await
+        .map_err(storage_error)?,
+    };
+
+    Ok(!rows.is_empty())
+}
+
+async fn insert_role(store: &PostgresAgentSessionStore, role: &RbacRole) -> MidgardResult<()> {
+    let mut db = store.db.clone();
+    sql::statement(
+        "INSERT INTO rbac_roles
+            (id, scope_kind, organization_id, slug, name, description, builtin_key, protected, archived_at, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+    )
+    .bind(role.id)
+    .bind(role.scope_kind.as_str())
+    .bind(role.organization_id)
+    .bind(role.slug.clone())
+    .bind(role.name.clone())
+    .bind(role.description.clone())
+    .bind(role.builtin_key.clone())
+    .bind(role.protected)
+    .bind(role.archived_at.clone())
+    .bind(role.created_at.clone())
+    .bind(role.updated_at.clone())
+    .exec(&mut db)
+    .await
+    .map_err(storage_error)?;
+    insert_role_permissions(store, role.id, &role.permissions).await
+}
+
+async fn insert_role_permissions(
+    store: &PostgresAgentSessionStore,
+    role_id: Uuid,
+    permissions: &[PermissionKey],
+) -> MidgardResult<()> {
+    let mut db = store.db.clone();
+    for permission in permissions {
+        sql::statement(
+            "INSERT INTO rbac_role_permissions (role_id, permission_key)
+             VALUES ($1, $2)",
+        )
+        .bind(role_id)
+        .bind(permission.as_str())
+        .exec(&mut db)
+        .await
+        .map_err(storage_error)?;
+    }
+
+    Ok(())
+}
+
+async fn load_role_permissions(
+    store: &PostgresAgentSessionStore,
+    role_id: Uuid,
+) -> MidgardResult<Vec<PermissionKey>> {
+    let mut db = store.db.clone();
+    let rows = sql::query(
+        "SELECT permission_key
+         FROM rbac_role_permissions
+         WHERE role_id = $1
+         ORDER BY permission_key ASC",
+    )
+    .bind(role_id)
+    .column_types([stmt::Type::String])
+    .exec(&mut db)
+    .await
+    .map_err(storage_error)?;
+
+    let permissions = rows
+        .into_iter()
+        .map(|row| {
+            let record = row.into_record();
+            PermissionKey::from_storage(string_from_value(&record[0])?)
+        })
+        .collect::<MidgardResult<Vec<_>>>()?;
+
+    Ok(sorted_permissions(permissions))
+}
+
+async fn seed_builtin_organization_roles(
+    store: &PostgresAgentSessionStore,
+    organization_id: Uuid,
+) -> MidgardResult<()> {
+    for definition in builtin_organization_roles() {
+        if load_role_by_builtin_key(
+            store,
+            RbacScopeKind::Organization,
+            Some(organization_id),
+            definition.builtin_key,
+        )
+        .await?
+        .is_some()
+        {
+            continue;
+        }
+        let now = utc_now_rfc3339();
+        let role = RbacRole {
+            id: Uuid::new_v4(),
+            scope_kind: RbacScopeKind::Organization,
+            organization_id: Some(organization_id),
+            slug: definition.slug.to_string(),
+            name: definition.name.to_string(),
+            description: Some(definition.description.to_string()),
+            builtin_key: Some(definition.builtin_key.to_string()),
+            protected: definition.protected,
+            archived_at: None,
+            created_at: now.clone(),
+            updated_at: now,
+            permissions: sorted_permissions(definition.permissions),
+        };
+        insert_role(store, &role).await?;
+    }
+
+    Ok(())
+}
+
+async fn is_system_owner_role(
+    store: &PostgresAgentSessionStore,
+    role_id: Uuid,
+) -> MidgardResult<bool> {
+    Ok(store
+        .load_system_role(role_id)
+        .await?
+        .is_some_and(|role| role.builtin_key.as_deref() == Some(SYSTEM_OWNER_BUILTIN)))
+}
+
+async fn active_system_owner_count(store: &PostgresAgentSessionStore) -> MidgardResult<usize> {
+    let mut db = store.db.clone();
+    let rows = sql::query(
+        "SELECT u.id
+         FROM users u
+         JOIN rbac_roles r ON r.id = u.system_role_id
+         WHERE u.active = TRUE
+           AND r.builtin_key = $1
+           AND r.archived_at IS NULL",
+    )
+    .bind(SYSTEM_OWNER_BUILTIN.to_string())
+    .column_types([stmt::Type::Uuid])
+    .exec(&mut db)
+    .await
+    .map_err(storage_error)?;
+
+    Ok(rows.len())
+}
+
+async fn is_organization_owner_role(
+    store: &PostgresAgentSessionStore,
+    organization_id: Uuid,
+    role_id: Uuid,
+) -> MidgardResult<bool> {
+    Ok(store
+        .load_organization_role(organization_id, role_id)
+        .await?
+        .is_some_and(|role| role.builtin_key.as_deref() == Some(ORG_OWNER_BUILTIN)))
+}
+
+fn optional_uuid_from_value(value: &stmt::Value) -> MidgardResult<Option<Uuid>> {
+    match value {
+        stmt::Value::Null => Ok(None),
+        stmt::Value::Uuid(value) => Ok(Some(*value)),
+        other => Err(MidgardError::Storage(format!(
+            "expected optional uuid, got {other:?}"
+        ))),
+    }
+}
+
+fn sorted_permissions(permissions: Vec<PermissionKey>) -> Vec<PermissionKey> {
+    let mut permissions = permissions;
+    permissions.sort();
+    permissions.dedup();
+    permissions
+}
+
+fn require_all_permissions(
+    permissions: &[PermissionKey],
+    required: Vec<PermissionKey>,
+) -> MidgardResult<()> {
+    if required
+        .into_iter()
+        .all(|required| permissions.iter().any(|permission| permission == &required))
+    {
+        return Ok(());
+    }
+
+    Err(MidgardError::Storage(
+        "owner role must retain all permissions".to_string(),
+    ))
+}
+
 async fn load_membership_with_store(
     store: &PostgresAgentSessionStore,
     organization_id: Uuid,
@@ -926,7 +1697,7 @@ async fn load_membership_with_store(
     let mut db = store.db.clone();
     let rows = if active_only {
         sql::query(
-            "SELECT id, organization_id, user_id, role, active, joined_at, created_at, updated_at
+            "SELECT id, organization_id, user_id, role, role_id, active, joined_at, created_at, updated_at
              FROM organization_memberships
              WHERE organization_id = $1 AND user_id = $2 AND active = TRUE",
         )
@@ -938,7 +1709,7 @@ async fn load_membership_with_store(
         .map_err(storage_error)?
     } else {
         sql::query(
-            "SELECT id, organization_id, user_id, role, active, joined_at, created_at, updated_at
+            "SELECT id, organization_id, user_id, role, role_id, active, joined_at, created_at, updated_at
              FROM organization_memberships
              WHERE organization_id = $1 AND user_id = $2",
         )
@@ -953,18 +1724,23 @@ async fn load_membership_with_store(
     rows.into_iter().next().map(membership_from_row).transpose()
 }
 
-async fn active_owner_count(
+async fn active_organization_owner_count(
     store: &PostgresAgentSessionStore,
     organization_id: Uuid,
 ) -> MidgardResult<usize> {
     let mut db = store.db.clone();
     let rows = sql::query(
-        "SELECT id, organization_id, user_id, role, active, joined_at, created_at, updated_at
-         FROM organization_memberships
-         WHERE organization_id = $1 AND active = TRUE AND role = 'owner'",
+        "SELECT m.id
+         FROM organization_memberships m
+         JOIN rbac_roles r ON r.id = m.role_id
+         WHERE m.organization_id = $1
+           AND m.active = TRUE
+           AND r.builtin_key = $2
+           AND r.archived_at IS NULL",
     )
     .bind(organization_id)
-    .column_types(membership_column_types())
+    .bind(ORG_OWNER_BUILTIN.to_string())
+    .column_types([stmt::Type::Uuid])
     .exec(&mut db)
     .await
     .map_err(storage_error)?;

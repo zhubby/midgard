@@ -53,6 +53,8 @@ pub struct StoredAuthUser {
     pub email_lower: String,
     pub display_name: String,
     pub role: String,
+    #[index]
+    pub system_role_id: Uuid,
     pub password_hash: String,
     pub active: bool,
     pub created_at: String,
@@ -116,6 +118,8 @@ pub struct StoredOrganizationMembership {
     #[index]
     pub user_id: Uuid,
     pub role: String,
+    #[index]
+    pub role_id: Uuid,
     pub active: bool,
     pub joined_at: String,
     pub created_at: String,
@@ -136,6 +140,37 @@ pub struct StoredWorkspace {
     pub updated_at: String,
 }
 
+#[derive(Debug, Clone, toasty::Model)]
+#[table = "rbac_roles"]
+pub struct StoredRbacRole {
+    #[key]
+    pub id: Uuid,
+    #[index]
+    pub scope_kind: String,
+    #[index]
+    pub organization_id: Option<Uuid>,
+    pub slug: String,
+    pub name: String,
+    pub description: Option<String>,
+    #[index]
+    pub builtin_key: Option<String>,
+    pub protected: bool,
+    pub archived_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, toasty::Model)]
+#[table = "rbac_role_permissions"]
+pub struct StoredRbacRolePermission {
+    #[key]
+    #[auto]
+    pub id: u64,
+    #[index]
+    pub role_id: Uuid,
+    pub permission_key: String,
+}
+
 pub fn storage_models() -> toasty::ModelSet {
     toasty::models!(
         StoredAgentSession,
@@ -146,6 +181,8 @@ pub fn storage_models() -> toasty::ModelSet {
         StoredAuthAuditEvent,
         StoredOrganization,
         StoredOrganizationMembership,
-        StoredWorkspace
+        StoredWorkspace,
+        StoredRbacRole,
+        StoredRbacRolePermission
     )
 }

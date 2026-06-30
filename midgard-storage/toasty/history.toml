@@ -24,3 +24,8 @@ snapshot_name = "0003_snapshot.toml"
 id = 5
 name = "0004_create_organizations_and_workspaces.sql"
 snapshot_name = "0004_snapshot.toml"
+
+[[migrations]]
+id = 6
+name = "0005_add_rbac_roles.sql"
+snapshot_name = "0005_snapshot.toml"

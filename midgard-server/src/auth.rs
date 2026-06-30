@@ -11,7 +11,8 @@ use axum::{
 use chrono::{Duration, Utc};
 use midgard_storage::{
     generate_session_token, hash_password, normalize_email, session_token_hash, verify_password,
-    AuthUser, AuthUserUpdate, NewAuthAuditEvent, NewAuthSession, NewUser, UserRole,
+    AuthUser, AuthUserUpdate, NewAuthAuditEvent, NewAuthSession, NewUser, PermissionKey, RbacRole,
+    UserRole,
 };
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -80,7 +81,11 @@ pub struct CreateAuthUserRequest {
     pub email: String,
     pub password: String,
     pub display_name: Option<String>,
-    pub role: UserRole,
+    #[serde(default)]
+    pub role: Option<UserRole>,
+    #[serde(default)]
+    #[ts(type = "string | null")]
+    pub system_role_id: Option<Uuid>,
     #[serde(default = "default_active")]
     pub active: bool,
 }
@@ -90,6 +95,9 @@ pub struct UpdateAuthUserRequest {
     pub password: Option<String>,
     pub display_name: Option<String>,
     pub role: Option<UserRole>,
+    #[serde(default)]
+    #[ts(type = "string | null")]
+    pub system_role_id: Option<Uuid>,
     pub active: Option<bool>,
 }
 
@@ -98,16 +106,35 @@ pub struct LogoutResponse {
     pub ok: bool,
 }
 
+#[derive(Clone, Debug, Serialize, TS)]
+pub struct AuthContext {
+    pub user: AuthUser,
+    pub system_role: RbacRole,
+    pub system_permissions: Vec<PermissionKey>,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct AuthenticatedUser(pub AuthUser);
 
 impl AuthenticatedUser {
-    pub(crate) fn require_admin(&self) -> Result<(), AppError> {
-        if self.0.role.can_manage_users() {
-            return Ok(());
+    pub(crate) async fn require_system_permission(
+        &self,
+        state: &AppState,
+        permission: PermissionKey,
+    ) -> Result<RbacRole, AppError> {
+        let role = state
+            .auth
+            .load_system_role(self.0.system_role_id)
+            .await?
+            .ok_or_else(|| AppError::Forbidden("system role is not available".to_string()))?;
+        if role.has_permission(&permission) {
+            return Ok(role);
         }
 
-        Err(AppError::Forbidden("admin role is required".to_string()))
+        Err(AppError::Forbidden(format!(
+            "permission {} is required",
+            permission.as_str()
+        )))
     }
 
     pub(crate) fn actor(&self) -> String {
@@ -193,7 +220,9 @@ pub(crate) async fn login(
         .await?
         .unwrap_or(record.user);
 
-    Ok((response_headers, Json(user)))
+    let context = auth_context(&state, user).await?;
+
+    Ok((response_headers, Json(context)))
 }
 
 pub(crate) async fn logout(
@@ -230,15 +259,19 @@ pub(crate) async fn logout(
     Ok((response_headers, Json(LogoutResponse { ok: true })))
 }
 
-pub(crate) async fn me(user: AuthenticatedUser) -> Json<AuthUser> {
-    Json(user.0)
+pub(crate) async fn me(
+    user: AuthenticatedUser,
+    State(state): State<AppState>,
+) -> Result<Json<AuthContext>, AppError> {
+    Ok(Json(auth_context(&state, user.0).await?))
 }
 
 pub(crate) async fn list_users(
     user: AuthenticatedUser,
     State(state): State<AppState>,
 ) -> Result<Json<Vec<AuthUser>>, AppError> {
-    user.require_admin()?;
+    user.require_system_permission(&state, PermissionKey::SystemUsersRead)
+        .await?;
     Ok(Json(state.auth.list_users().await?))
 }
 
@@ -247,7 +280,8 @@ pub(crate) async fn create_user(
     State(state): State<AppState>,
     Json(request): Json<CreateAuthUserRequest>,
 ) -> Result<(StatusCode, Json<AuthUser>), AppError> {
-    user.require_admin()?;
+    user.require_system_permission(&state, PermissionKey::SystemUsersManage)
+        .await?;
     let email = normalize_email(&request.email);
     if email.is_empty() {
         return Err(AppError::BadRequest("email is required".to_string()));
@@ -266,7 +300,8 @@ pub(crate) async fn create_user(
         .create_user(NewUser {
             email: email.clone(),
             display_name,
-            role: request.role,
+            role: request.role.unwrap_or(UserRole::Viewer),
+            system_role_id: request.system_role_id,
             password_hash: hash_password(&request.password)?,
             active: request.active,
         })
@@ -293,10 +328,12 @@ pub(crate) async fn update_user(
     State(state): State<AppState>,
     Json(request): Json<UpdateAuthUserRequest>,
 ) -> Result<Json<AuthUser>, AppError> {
-    user.require_admin()?;
+    user.require_system_permission(&state, PermissionKey::SystemUsersManage)
+        .await?;
     let update = AuthUserUpdate {
         display_name: request.display_name,
         role: request.role,
+        system_role_id: request.system_role_id,
         password_hash: request.password.as_deref().map(hash_password).transpose()?,
         active: request.active,
     };
@@ -349,6 +386,25 @@ async fn record_login_failure(
 
 fn invalid_credentials() -> AppError {
     AppError::Unauthorized("invalid email or password".to_string())
+}
+
+async fn auth_context(state: &AppState, user: AuthUser) -> Result<AuthContext, AppError> {
+    let system_role = state
+        .auth
+        .load_system_role(user.system_role_id)
+        .await?
+        .ok_or_else(|| AppError::Forbidden("system role is not available".to_string()))?;
+    let system_permissions = if system_role.archived_at.is_none() {
+        system_role.permissions.clone()
+    } else {
+        Vec::new()
+    };
+
+    Ok(AuthContext {
+        user,
+        system_role,
+        system_permissions,
+    })
 }
 
 fn cookie_value(headers: &HeaderMap, cookie_name: &str) -> Option<String> {

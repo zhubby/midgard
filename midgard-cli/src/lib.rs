@@ -209,6 +209,7 @@ async fn run_auth(config_path: Option<&Path>, command: AuthCommand) -> Result<()
                         .filter(|value| !value.is_empty())
                         .unwrap_or_else(|| email_lower.clone()),
                     role: UserRole::Admin,
+                    system_role_id: None,
                     password_hash: hash_password(&password)?,
                     active: true,
                 })

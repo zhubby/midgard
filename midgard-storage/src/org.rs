@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
+use crate::PermissionKey;
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum OrganizationRole {
@@ -73,6 +75,8 @@ pub struct OrganizationMembership {
     #[ts(type = "string")]
     pub user_id: Uuid,
     pub role: OrganizationRole,
+    #[ts(type = "string")]
+    pub role_id: Uuid,
     pub active: bool,
     pub joined_at: String,
     pub created_at: String,
@@ -98,6 +102,7 @@ pub struct OrganizationContext {
     pub organization: Organization,
     pub membership: OrganizationMembership,
     pub workspaces: Vec<Workspace>,
+    pub permissions: Vec<PermissionKey>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -112,12 +117,14 @@ pub struct NewOrganizationMembership {
     pub organization_id: Uuid,
     pub user_id: Uuid,
     pub role: OrganizationRole,
+    pub role_id: Option<Uuid>,
     pub active: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OrganizationMembershipUpdate {
     pub role: Option<OrganizationRole>,
+    pub role_id: Option<Uuid>,
     pub active: Option<bool>,
 }
 

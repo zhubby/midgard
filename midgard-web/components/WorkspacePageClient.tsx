@@ -14,10 +14,11 @@ export function WorkspacePageClient({
 }: WorkspacePageClientProps) {
   return (
     <AuthGate>
-      {({ busyAuth, user, onLogout }) => (
+      {({ auth, busyAuth, user, onLogout }) => (
         <WorkspaceRoute
           busyAuth={busyAuth}
           orgSlug={orgSlug}
+          systemPermissions={auth.system_permissions}
           user={user}
           workspaceSlug={workspaceSlug}
           onLogout={onLogout}

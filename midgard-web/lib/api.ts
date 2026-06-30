@@ -2,13 +2,25 @@ import type {
   ApprovalRecord,
   AgentSession,
   ApprovalResponse,
+  AddOrganizationMemberRequest,
+  AuthContext,
   AuthUser,
+  CreateAuthUserRequest,
   CreateOrganizationRequest,
+  CreateRbacRoleRequest,
   CreateWorkspaceRequest,
   OrganizationContext,
+  OrganizationMemberView,
+  OrganizationMembership,
+  PermissionCatalogItem,
   PluginResponse,
+  ReplaceRolePermissionsRequest,
+  RbacRole,
   RunAccepted,
   ToolDefinition,
+  UpdateAuthUserRequest,
+  UpdateOrganizationMemberRequest,
+  UpdateRbacRoleRequest,
   Workspace,
 } from "./types";
 
@@ -28,12 +40,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-export function fetchCurrentUser(init?: RequestInit): Promise<AuthUser> {
-  return request<AuthUser>("/api/auth/me", init);
+export function fetchCurrentUser(init?: RequestInit): Promise<AuthContext> {
+  return request<AuthContext>("/api/auth/me", init);
 }
 
-export function login(email: string, password: string): Promise<AuthUser> {
-  return request<AuthUser>("/api/auth/login", {
+export function login(email: string, password: string): Promise<AuthContext> {
+  return request<AuthContext>("/api/auth/login", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email, password }),
@@ -50,6 +62,69 @@ export function fetchOrganizationContexts(): Promise<OrganizationContext[]> {
   return request<OrganizationContext[]>("/api/orgs");
 }
 
+export function fetchPermissionCatalog(): Promise<PermissionCatalogItem[]> {
+  return request<PermissionCatalogItem[]>("/api/permissions/catalog");
+}
+
+export function fetchUsers(): Promise<AuthUser[]> {
+  return request<AuthUser[]>("/api/auth/users");
+}
+
+export function createUser(payload: CreateAuthUserRequest): Promise<AuthUser> {
+  return request<AuthUser>("/api/auth/users", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateUser(
+  userId: string,
+  payload: UpdateAuthUserRequest,
+): Promise<AuthUser> {
+  return request<AuthUser>(`/api/auth/users/${userId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function fetchSystemRoles(): Promise<RbacRole[]> {
+  return request<RbacRole[]>("/api/rbac/system/roles");
+}
+
+export function createSystemRole(
+  payload: CreateRbacRoleRequest,
+): Promise<RbacRole> {
+  return request<RbacRole>("/api/rbac/system/roles", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateSystemRole(
+  roleId: string,
+  payload: UpdateRbacRoleRequest,
+): Promise<RbacRole> {
+  return request<RbacRole>(`/api/rbac/system/roles/${roleId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function replaceSystemRolePermissions(
+  roleId: string,
+  payload: ReplaceRolePermissionsRequest,
+): Promise<RbacRole> {
+  return request<RbacRole>(`/api/rbac/system/roles/${roleId}/permissions`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
 export function createOrganization(
   payload: CreateOrganizationRequest,
 ): Promise<OrganizationContext> {
@@ -64,6 +139,74 @@ export function fetchOrganizationContext(
   orgSlug: string,
 ): Promise<OrganizationContext> {
   return request<OrganizationContext>(`/api/orgs/${orgSlug}`);
+}
+
+export function fetchOrganizationRoles(orgSlug: string): Promise<RbacRole[]> {
+  return request<RbacRole[]>(`/api/orgs/${orgSlug}/roles`);
+}
+
+export function fetchOrganizationMembers(
+  orgSlug: string,
+): Promise<OrganizationMemberView[]> {
+  return request<OrganizationMemberView[]>(`/api/orgs/${orgSlug}/members`);
+}
+
+export function createOrganizationRole(
+  orgSlug: string,
+  payload: CreateRbacRoleRequest,
+): Promise<RbacRole> {
+  return request<RbacRole>(`/api/orgs/${orgSlug}/roles`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateOrganizationRole(
+  orgSlug: string,
+  roleId: string,
+  payload: UpdateRbacRoleRequest,
+): Promise<RbacRole> {
+  return request<RbacRole>(`/api/orgs/${orgSlug}/roles/${roleId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function replaceOrganizationRolePermissions(
+  orgSlug: string,
+  roleId: string,
+  payload: ReplaceRolePermissionsRequest,
+): Promise<RbacRole> {
+  return request<RbacRole>(`/api/orgs/${orgSlug}/roles/${roleId}/permissions`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateOrganizationMember(
+  orgSlug: string,
+  userId: string,
+  payload: UpdateOrganizationMemberRequest,
+): Promise<OrganizationMembership> {
+  return request<OrganizationMembership>(`/api/orgs/${orgSlug}/members/${userId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function addOrganizationMember(
+  orgSlug: string,
+  payload: AddOrganizationMemberRequest,
+): Promise<OrganizationMembership> {
+  return request<OrganizationMembership>(`/api/orgs/${orgSlug}/members`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
 }
 
 export function createWorkspace(

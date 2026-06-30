@@ -59,6 +59,8 @@ pub struct AuthUser {
     pub email: String,
     pub display_name: String,
     pub role: UserRole,
+    #[ts(type = "string")]
+    pub system_role_id: Uuid,
     pub active: bool,
     pub created_at: String,
     pub updated_at: String,
@@ -77,6 +79,7 @@ pub struct NewUser {
     pub email: String,
     pub display_name: String,
     pub role: UserRole,
+    pub system_role_id: Option<Uuid>,
     pub password_hash: String,
     pub active: bool,
 }
@@ -85,6 +88,7 @@ pub struct NewUser {
 pub struct AuthUserUpdate {
     pub display_name: Option<String>,
     pub role: Option<UserRole>,
+    pub system_role_id: Option<Uuid>,
     pub password_hash: Option<String>,
     pub active: Option<bool>,
 }

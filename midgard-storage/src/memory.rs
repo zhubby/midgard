@@ -3,7 +3,10 @@ use midgard_agent::{
     AgentMessage, AgentSession, ApprovalDecision, ApprovalRecord, PendingApproval,
 };
 use midgard_core::{MidgardError, MidgardResult};
-use std::{collections::BTreeMap, sync::Mutex};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Mutex,
+};
 use uuid::Uuid;
 
 use crate::{
@@ -15,6 +18,11 @@ use crate::{
         NewOrganization, NewOrganizationMembership, NewWorkspace, Organization,
         OrganizationContext, OrganizationMembership, OrganizationMembershipUpdate, Workspace,
         WorkspaceUpdate,
+    },
+    rbac::{
+        builtin_organization_roles, builtin_system_roles, legacy_organization_role_builtin_key,
+        legacy_user_role_builtin_key, NewRbacRole, PermissionKey, RbacRole, RbacRoleUpdate,
+        RbacScopeKind, ORG_OWNER_BUILTIN, SYSTEM_OWNER_BUILTIN,
     },
     store::{AgentSessionStore, AuthStore, OrganizationStore},
 };
@@ -51,29 +59,176 @@ impl MemoryAgentSessionStore {
     }
 }
 
-#[derive(Default)]
 pub struct MemoryAuthStore {
     users: Mutex<BTreeMap<Uuid, AuthUserRecord>>,
     sessions: Mutex<BTreeMap<String, AuthSession>>,
     audit_events: Mutex<Vec<NewAuthAuditEvent>>,
+    roles: Mutex<BTreeMap<Uuid, RbacRole>>,
 }
 
-#[derive(Default)]
 pub struct MemoryOrganizationStore {
     organizations: Mutex<BTreeMap<Uuid, Organization>>,
     memberships: Mutex<BTreeMap<Uuid, OrganizationMembership>>,
     workspaces: Mutex<BTreeMap<Uuid, Workspace>>,
+    roles: Mutex<BTreeMap<Uuid, RbacRole>>,
 }
 
 impl MemoryOrganizationStore {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            organizations: Mutex::new(BTreeMap::new()),
+            memberships: Mutex::new(BTreeMap::new()),
+            workspaces: Mutex::new(BTreeMap::new()),
+            roles: Mutex::new(BTreeMap::new()),
+        }
+    }
+
+    fn organization_role_by_id(
+        &self,
+        organization_id: Uuid,
+        id: Uuid,
+    ) -> MidgardResult<Option<RbacRole>> {
+        Ok(self
+            .roles
+            .lock()
+            .map_err(|_| MidgardError::Storage("RBAC role store poisoned".to_string()))?
+            .get(&id)
+            .filter(|role| role.organization_id == Some(organization_id))
+            .cloned())
+    }
+
+    fn organization_role_by_builtin_key(
+        &self,
+        organization_id: Uuid,
+        builtin_key: &str,
+    ) -> MidgardResult<Option<RbacRole>> {
+        Ok(self
+            .roles
+            .lock()
+            .map_err(|_| MidgardError::Storage("RBAC role store poisoned".to_string()))?
+            .values()
+            .find(|role| {
+                role.organization_id == Some(organization_id)
+                    && role.builtin_key.as_deref() == Some(builtin_key)
+            })
+            .cloned())
+    }
+
+    fn is_organization_owner_role_id(
+        &self,
+        organization_id: Uuid,
+        role_id: Uuid,
+    ) -> MidgardResult<bool> {
+        Ok(self
+            .organization_role_by_id(organization_id, role_id)?
+            .is_some_and(|role| role.builtin_key.as_deref() == Some(ORG_OWNER_BUILTIN)))
+    }
+
+    fn active_organization_owner_count(
+        &self,
+        organization_id: Uuid,
+        memberships: &BTreeMap<Uuid, OrganizationMembership>,
+    ) -> MidgardResult<usize> {
+        let roles = self
+            .roles
+            .lock()
+            .map_err(|_| MidgardError::Storage("RBAC role store poisoned".to_string()))?;
+        Ok(memberships
+            .values()
+            .filter(|membership| {
+                membership.organization_id == organization_id
+                    && membership.active
+                    && roles
+                        .get(&membership.role_id)
+                        .is_some_and(|role| role.builtin_key.as_deref() == Some(ORG_OWNER_BUILTIN))
+            })
+            .count())
+    }
+
+    fn seed_builtin_organization_roles(&self, organization_id: Uuid) -> MidgardResult<()> {
+        let now = utc_now_rfc3339();
+        let mut roles = self
+            .roles
+            .lock()
+            .map_err(|_| MidgardError::Storage("RBAC role store poisoned".to_string()))?;
+        for definition in builtin_organization_roles() {
+            if roles.values().any(|role| {
+                role.organization_id == Some(organization_id)
+                    && role.builtin_key.as_deref() == Some(definition.builtin_key)
+            }) {
+                continue;
+            }
+            let id = Uuid::new_v4();
+            roles.insert(
+                id,
+                RbacRole {
+                    id,
+                    scope_kind: RbacScopeKind::Organization,
+                    organization_id: Some(organization_id),
+                    slug: definition.slug.to_string(),
+                    name: definition.name.to_string(),
+                    description: Some(definition.description.to_string()),
+                    builtin_key: Some(definition.builtin_key.to_string()),
+                    protected: definition.protected,
+                    archived_at: None,
+                    created_at: now.clone(),
+                    updated_at: now.clone(),
+                    permissions: sorted_permissions(definition.permissions),
+                },
+            );
+        }
+
+        Ok(())
+    }
+}
+
+impl Default for MemoryAuthStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Default for MemoryOrganizationStore {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
 impl MemoryAuthStore {
     pub fn new() -> Self {
-        Self::default()
+        let now = utc_now_rfc3339();
+        let roles = builtin_system_roles()
+            .into_iter()
+            .map(|definition| {
+                let id = definition
+                    .id
+                    .expect("system builtin roles must have stable ids");
+                (
+                    id,
+                    RbacRole {
+                        id,
+                        scope_kind: RbacScopeKind::System,
+                        organization_id: None,
+                        slug: definition.slug.to_string(),
+                        name: definition.name.to_string(),
+                        description: Some(definition.description.to_string()),
+                        builtin_key: Some(definition.builtin_key.to_string()),
+                        protected: definition.protected,
+                        archived_at: None,
+                        created_at: now.clone(),
+                        updated_at: now.clone(),
+                        permissions: sorted_permissions(definition.permissions),
+                    },
+                )
+            })
+            .collect();
+
+        Self {
+            users: Mutex::new(BTreeMap::new()),
+            sessions: Mutex::new(BTreeMap::new()),
+            audit_events: Mutex::new(Vec::new()),
+            roles: Mutex::new(roles),
+        }
     }
 
     pub fn audit_event_count(&self) -> MidgardResult<usize> {
@@ -82,6 +237,50 @@ impl MemoryAuthStore {
             .lock()
             .map_err(|_| MidgardError::Storage("auth audit store poisoned".to_string()))?
             .len())
+    }
+
+    fn system_role_by_id(&self, id: Uuid) -> MidgardResult<Option<RbacRole>> {
+        Ok(self
+            .roles
+            .lock()
+            .map_err(|_| MidgardError::Storage("RBAC role store poisoned".to_string()))?
+            .get(&id)
+            .cloned())
+    }
+
+    fn system_role_by_builtin_key(&self, builtin_key: &str) -> MidgardResult<Option<RbacRole>> {
+        Ok(self
+            .roles
+            .lock()
+            .map_err(|_| MidgardError::Storage("RBAC role store poisoned".to_string()))?
+            .values()
+            .find(|role| role.builtin_key.as_deref() == Some(builtin_key))
+            .cloned())
+    }
+
+    fn is_system_owner_role_id(&self, role_id: Uuid) -> MidgardResult<bool> {
+        Ok(self
+            .system_role_by_id(role_id)?
+            .is_some_and(|role| role.builtin_key.as_deref() == Some(SYSTEM_OWNER_BUILTIN)))
+    }
+
+    fn active_system_owner_count(
+        &self,
+        users: &BTreeMap<Uuid, AuthUserRecord>,
+    ) -> MidgardResult<usize> {
+        let roles = self
+            .roles
+            .lock()
+            .map_err(|_| MidgardError::Storage("RBAC role store poisoned".to_string()))?;
+        Ok(users
+            .values()
+            .filter(|record| {
+                record.user.active
+                    && roles.get(&record.user.system_role_id).is_some_and(|role| {
+                        role.builtin_key.as_deref() == Some(SYSTEM_OWNER_BUILTIN)
+                    })
+            })
+            .count())
     }
 }
 
@@ -226,6 +425,29 @@ impl AuthStore for MemoryAuthStore {
             return Err(MidgardError::Storage("user email is required".to_string()));
         }
 
+        let system_role_id = match user.system_role_id {
+            Some(id) => {
+                let role = self
+                    .system_role_by_id(id)?
+                    .ok_or_else(|| MidgardError::Storage("system role not found".to_string()))?;
+                if role.archived_at.is_some() {
+                    return Err(MidgardError::Storage(
+                        "archived system role cannot be assigned".to_string(),
+                    ));
+                }
+                id
+            }
+            None => {
+                let builtin_key = legacy_user_role_builtin_key(&user.role);
+                self.system_role_by_builtin_key(builtin_key)?
+                    .ok_or_else(|| {
+                        MidgardError::Storage(format!(
+                            "builtin system role not found: {builtin_key}"
+                        ))
+                    })?
+                    .id
+            }
+        };
         let mut users = self
             .users
             .lock()
@@ -245,6 +467,7 @@ impl AuthStore for MemoryAuthStore {
             email: email_lower,
             display_name: user.display_name.trim().to_string(),
             role: user.role,
+            system_role_id,
             active: user.active,
             created_at: now.clone(),
             updated_at: now,
@@ -302,16 +525,43 @@ impl AuthStore for MemoryAuthStore {
             .users
             .lock()
             .map_err(|_| MidgardError::Storage("auth user store poisoned".to_string()))?;
-        let Some(record) = users.get_mut(&id) else {
+        let Some(record) = users.get(&id) else {
             return Ok(None);
         };
+        let next_system_role_id = match update.system_role_id {
+            Some(role_id) => {
+                let role = self
+                    .system_role_by_id(role_id)?
+                    .ok_or_else(|| MidgardError::Storage("system role not found".to_string()))?;
+                if role.archived_at.is_some() {
+                    return Err(MidgardError::Storage(
+                        "archived system role cannot be assigned".to_string(),
+                    ));
+                }
+                role_id
+            }
+            None => record.user.system_role_id,
+        };
+        let current_active = record.user.active;
+        let current_system_role_id = record.user.system_role_id;
+        let next_active = update.active.unwrap_or(current_active);
+        let removes_owner = current_active
+            && self.is_system_owner_role_id(current_system_role_id)?
+            && (!next_active || !self.is_system_owner_role_id(next_system_role_id)?);
+        if removes_owner && self.active_system_owner_count(&users)? <= 1 {
+            return Err(MidgardError::Storage(
+                "cannot remove or demote the last system owner".to_string(),
+            ));
+        }
 
+        let record = users.get_mut(&id).expect("user id came from the same map");
         if let Some(display_name) = update.display_name {
             record.user.display_name = display_name.trim().to_string();
         }
         if let Some(role) = update.role {
             record.user.role = role;
         }
+        record.user.system_role_id = next_system_role_id;
         if let Some(password_hash) = update.password_hash {
             record.password_hash = password_hash;
         }
@@ -403,6 +653,139 @@ impl AuthStore for MemoryAuthStore {
 
         Ok(())
     }
+
+    async fn list_system_roles(&self) -> MidgardResult<Vec<RbacRole>> {
+        let mut roles = self
+            .roles
+            .lock()
+            .map_err(|_| MidgardError::Storage("RBAC role store poisoned".to_string()))?
+            .values()
+            .filter(|role| role.scope_kind == RbacScopeKind::System)
+            .cloned()
+            .collect::<Vec<_>>();
+        roles.sort_by(|left, right| left.slug.cmp(&right.slug));
+        Ok(roles)
+    }
+
+    async fn load_system_role(&self, id: Uuid) -> MidgardResult<Option<RbacRole>> {
+        self.system_role_by_id(id)
+    }
+
+    async fn load_system_role_by_builtin_key(
+        &self,
+        builtin_key: &str,
+    ) -> MidgardResult<Option<RbacRole>> {
+        self.system_role_by_builtin_key(builtin_key)
+    }
+
+    async fn create_system_role(&self, role: NewRbacRole) -> MidgardResult<RbacRole> {
+        if role.scope_kind != RbacScopeKind::System || role.organization_id.is_some() {
+            return Err(MidgardError::Storage(
+                "system role must use system scope".to_string(),
+            ));
+        }
+        PermissionKey::validate_for_scope(&RbacScopeKind::System, &role.permissions)?;
+        let slug = normalize_slug(&role.slug)?;
+        let name = required_name(&role.name, "role name")?;
+        let mut roles = self
+            .roles
+            .lock()
+            .map_err(|_| MidgardError::Storage("RBAC role store poisoned".to_string()))?;
+        if roles.values().any(|current| {
+            current.scope_kind == RbacScopeKind::System
+                && current.organization_id.is_none()
+                && current.slug == slug
+        }) {
+            return Err(MidgardError::Storage(format!(
+                "system role slug already exists: {slug}"
+            )));
+        }
+
+        let now = utc_now_rfc3339();
+        let created = RbacRole {
+            id: Uuid::new_v4(),
+            scope_kind: RbacScopeKind::System,
+            organization_id: None,
+            slug,
+            name,
+            description: role.description,
+            builtin_key: role.builtin_key,
+            protected: role.protected,
+            archived_at: None,
+            created_at: now.clone(),
+            updated_at: now,
+            permissions: sorted_permissions(role.permissions),
+        };
+        roles.insert(created.id, created.clone());
+        Ok(created)
+    }
+
+    async fn update_system_role(
+        &self,
+        id: Uuid,
+        update: RbacRoleUpdate,
+    ) -> MidgardResult<Option<RbacRole>> {
+        let mut roles = self
+            .roles
+            .lock()
+            .map_err(|_| MidgardError::Storage("RBAC role store poisoned".to_string()))?;
+        let Some(role) = roles.get_mut(&id) else {
+            return Ok(None);
+        };
+        if role.scope_kind != RbacScopeKind::System {
+            return Ok(None);
+        }
+        if update.archived == Some(true) && role.protected {
+            return Err(MidgardError::Storage(
+                "protected system role cannot be archived".to_string(),
+            ));
+        }
+        if let Some(name) = update.name {
+            role.name = required_name(&name, "role name")?;
+        }
+        if let Some(description) = update.description {
+            role.description = if description.trim().is_empty() {
+                None
+            } else {
+                Some(description.trim().to_string())
+            };
+        }
+        if let Some(archived) = update.archived {
+            role.archived_at = archived.then(utc_now_rfc3339);
+        }
+        role.updated_at = utc_now_rfc3339();
+        Ok(Some(role.clone()))
+    }
+
+    async fn replace_system_role_permissions(
+        &self,
+        id: Uuid,
+        permissions: Vec<PermissionKey>,
+    ) -> MidgardResult<Option<RbacRole>> {
+        PermissionKey::validate_for_scope(&RbacScopeKind::System, &permissions)?;
+        let mut roles = self
+            .roles
+            .lock()
+            .map_err(|_| MidgardError::Storage("RBAC role store poisoned".to_string()))?;
+        let Some(role) = roles.get_mut(&id) else {
+            return Ok(None);
+        };
+        if role.scope_kind != RbacScopeKind::System {
+            return Ok(None);
+        }
+        if role.archived_at.is_some() {
+            return Err(MidgardError::Storage(
+                "archived system role permissions cannot be updated".to_string(),
+            ));
+        }
+        let permissions = sorted_permissions(permissions);
+        if role.builtin_key.as_deref() == Some(SYSTEM_OWNER_BUILTIN) {
+            require_all_permissions(&permissions, PermissionKey::system_permissions())?;
+        }
+        role.permissions = permissions;
+        role.updated_at = utc_now_rfc3339();
+        Ok(Some(role.clone()))
+    }
 }
 
 #[async_trait]
@@ -434,6 +817,8 @@ impl OrganizationStore for MemoryOrganizationStore {
             updated_at: now,
         };
         organizations.insert(created.id, created.clone());
+        drop(organizations);
+        self.seed_builtin_organization_roles(created.id)?;
 
         Ok(created)
     }
@@ -470,6 +855,11 @@ impl OrganizationStore for MemoryOrganizationStore {
             .lock()
             .map_err(|_| MidgardError::Storage("workspace store poisoned".to_string()))?
             .clone();
+        let roles = self
+            .roles
+            .lock()
+            .map_err(|_| MidgardError::Storage("RBAC role store poisoned".to_string()))?
+            .clone();
 
         let mut contexts = memberships
             .values()
@@ -493,6 +883,11 @@ impl OrganizationStore for MemoryOrganizationStore {
                     organization: organization.clone(),
                     membership: membership.clone(),
                     workspaces: organization_workspaces,
+                    permissions: roles
+                        .get(&membership.role_id)
+                        .filter(|role| role.archived_at.is_none())
+                        .map(|role| role.permissions.clone())
+                        .unwrap_or_default(),
                 })
             })
             .collect::<Vec<_>>();
@@ -521,10 +916,53 @@ impl OrganizationStore for MemoryOrganizationStore {
             .cloned())
     }
 
+    async fn list_memberships(
+        &self,
+        organization_id: Uuid,
+    ) -> MidgardResult<Vec<OrganizationMembership>> {
+        let mut memberships = self
+            .memberships
+            .lock()
+            .map_err(|_| {
+                MidgardError::Storage("organization membership store poisoned".to_string())
+            })?
+            .values()
+            .filter(|membership| membership.organization_id == organization_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        memberships.sort_by_key(|membership| membership.user_id);
+        Ok(memberships)
+    }
+
     async fn create_membership(
         &self,
         membership: NewOrganizationMembership,
     ) -> MidgardResult<OrganizationMembership> {
+        let role_id = match membership.role_id {
+            Some(role_id) => {
+                let role = self
+                    .organization_role_by_id(membership.organization_id, role_id)?
+                    .ok_or_else(|| {
+                        MidgardError::Storage("organization role not found".to_string())
+                    })?;
+                if role.archived_at.is_some() {
+                    return Err(MidgardError::Storage(
+                        "archived organization role cannot be assigned".to_string(),
+                    ));
+                }
+                role_id
+            }
+            None => {
+                let builtin_key = legacy_organization_role_builtin_key(&membership.role);
+                self.organization_role_by_builtin_key(membership.organization_id, builtin_key)?
+                    .ok_or_else(|| {
+                        MidgardError::Storage(format!(
+                            "builtin organization role not found: {builtin_key}"
+                        ))
+                    })?
+                    .id
+            }
+        };
         let mut memberships = self.memberships.lock().map_err(|_| {
             MidgardError::Storage("organization membership store poisoned".to_string())
         })?;
@@ -543,6 +981,7 @@ impl OrganizationStore for MemoryOrganizationStore {
             organization_id: membership.organization_id,
             user_id: membership.user_id,
             role: membership.role,
+            role_id,
             active: membership.active,
             joined_at: now.clone(),
             created_at: now.clone(),
@@ -572,30 +1011,63 @@ impl OrganizationStore for MemoryOrganizationStore {
             return Ok(None);
         };
 
-        let owner_count = memberships
-            .values()
-            .filter(|membership| {
-                membership.organization_id == organization_id
-                    && membership.active
-                    && membership.role.is_owner()
-            })
-            .count();
+        let next_role_id = match update.role_id {
+            Some(role_id) => {
+                let role = self
+                    .organization_role_by_id(organization_id, role_id)?
+                    .ok_or_else(|| {
+                        MidgardError::Storage("organization role not found".to_string())
+                    })?;
+                if role.archived_at.is_some() {
+                    return Err(MidgardError::Storage(
+                        "archived organization role cannot be assigned".to_string(),
+                    ));
+                }
+                role_id
+            }
+            None => {
+                if let Some(role) = &update.role {
+                    let builtin_key = legacy_organization_role_builtin_key(role);
+                    self.organization_role_by_builtin_key(organization_id, builtin_key)?
+                        .ok_or_else(|| {
+                            MidgardError::Storage(format!(
+                                "builtin organization role not found: {builtin_key}"
+                            ))
+                        })?
+                        .id
+                } else {
+                    memberships
+                        .get(&id)
+                        .expect("membership id came from the same map")
+                        .role_id
+                }
+            }
+        };
         let current = memberships
-            .get_mut(&id)
+            .get(&id)
             .expect("membership id came from the same map");
-        let removes_owner = current.active
-            && current.role.is_owner()
-            && (update.active == Some(false)
-                || update.role.as_ref().is_some_and(|role| !role.is_owner()));
-        if removes_owner && owner_count <= 1 {
+        let current_active = current.active;
+        let current_role_id = current.role_id;
+        let next_active = update.active.unwrap_or(current_active);
+        let removes_owner = current_active
+            && self.is_organization_owner_role_id(organization_id, current_role_id)?
+            && (!next_active
+                || !self.is_organization_owner_role_id(organization_id, next_role_id)?);
+        if removes_owner
+            && self.active_organization_owner_count(organization_id, &memberships)? <= 1
+        {
             return Err(MidgardError::Storage(
                 "cannot remove or demote the last organization owner".to_string(),
             ));
         }
 
+        let current = memberships
+            .get_mut(&id)
+            .expect("membership id came from the same map");
         if let Some(role) = update.role {
             current.role = role;
         }
+        current.role_id = next_role_id;
         if let Some(active) = update.active {
             current.active = active;
         }
@@ -695,6 +1167,158 @@ impl OrganizationStore for MemoryOrganizationStore {
 
         Ok(Some(workspace.clone()))
     }
+
+    async fn list_organization_roles(&self, organization_id: Uuid) -> MidgardResult<Vec<RbacRole>> {
+        let mut roles = self
+            .roles
+            .lock()
+            .map_err(|_| MidgardError::Storage("RBAC role store poisoned".to_string()))?
+            .values()
+            .filter(|role| {
+                role.scope_kind == RbacScopeKind::Organization
+                    && role.organization_id == Some(organization_id)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        roles.sort_by(|left, right| left.slug.cmp(&right.slug));
+        Ok(roles)
+    }
+
+    async fn load_organization_role(
+        &self,
+        organization_id: Uuid,
+        id: Uuid,
+    ) -> MidgardResult<Option<RbacRole>> {
+        self.organization_role_by_id(organization_id, id)
+    }
+
+    async fn load_organization_role_by_builtin_key(
+        &self,
+        organization_id: Uuid,
+        builtin_key: &str,
+    ) -> MidgardResult<Option<RbacRole>> {
+        self.organization_role_by_builtin_key(organization_id, builtin_key)
+    }
+
+    async fn create_organization_role(&self, role: NewRbacRole) -> MidgardResult<RbacRole> {
+        let Some(organization_id) = role.organization_id else {
+            return Err(MidgardError::Storage(
+                "organization role must include organization_id".to_string(),
+            ));
+        };
+        if role.scope_kind != RbacScopeKind::Organization {
+            return Err(MidgardError::Storage(
+                "organization role must use organization scope".to_string(),
+            ));
+        }
+        PermissionKey::validate_for_scope(&RbacScopeKind::Organization, &role.permissions)?;
+        let slug = normalize_slug(&role.slug)?;
+        let name = required_name(&role.name, "role name")?;
+        let mut roles = self
+            .roles
+            .lock()
+            .map_err(|_| MidgardError::Storage("RBAC role store poisoned".to_string()))?;
+        if roles.values().any(|current| {
+            current.scope_kind == RbacScopeKind::Organization
+                && current.organization_id == Some(organization_id)
+                && current.slug == slug
+        }) {
+            return Err(MidgardError::Storage(format!(
+                "organization role slug already exists: {slug}"
+            )));
+        }
+
+        let now = utc_now_rfc3339();
+        let created = RbacRole {
+            id: Uuid::new_v4(),
+            scope_kind: RbacScopeKind::Organization,
+            organization_id: Some(organization_id),
+            slug,
+            name,
+            description: role.description,
+            builtin_key: role.builtin_key,
+            protected: role.protected,
+            archived_at: None,
+            created_at: now.clone(),
+            updated_at: now,
+            permissions: sorted_permissions(role.permissions),
+        };
+        roles.insert(created.id, created.clone());
+        Ok(created)
+    }
+
+    async fn update_organization_role(
+        &self,
+        organization_id: Uuid,
+        id: Uuid,
+        update: RbacRoleUpdate,
+    ) -> MidgardResult<Option<RbacRole>> {
+        let mut roles = self
+            .roles
+            .lock()
+            .map_err(|_| MidgardError::Storage("RBAC role store poisoned".to_string()))?;
+        let Some(role) = roles.get_mut(&id) else {
+            return Ok(None);
+        };
+        if role.scope_kind != RbacScopeKind::Organization
+            || role.organization_id != Some(organization_id)
+        {
+            return Ok(None);
+        }
+        if update.archived == Some(true) && role.protected {
+            return Err(MidgardError::Storage(
+                "protected organization role cannot be archived".to_string(),
+            ));
+        }
+        if let Some(name) = update.name {
+            role.name = required_name(&name, "role name")?;
+        }
+        if let Some(description) = update.description {
+            role.description = if description.trim().is_empty() {
+                None
+            } else {
+                Some(description.trim().to_string())
+            };
+        }
+        if let Some(archived) = update.archived {
+            role.archived_at = archived.then(utc_now_rfc3339);
+        }
+        role.updated_at = utc_now_rfc3339();
+        Ok(Some(role.clone()))
+    }
+
+    async fn replace_organization_role_permissions(
+        &self,
+        organization_id: Uuid,
+        id: Uuid,
+        permissions: Vec<PermissionKey>,
+    ) -> MidgardResult<Option<RbacRole>> {
+        PermissionKey::validate_for_scope(&RbacScopeKind::Organization, &permissions)?;
+        let mut roles = self
+            .roles
+            .lock()
+            .map_err(|_| MidgardError::Storage("RBAC role store poisoned".to_string()))?;
+        let Some(role) = roles.get_mut(&id) else {
+            return Ok(None);
+        };
+        if role.scope_kind != RbacScopeKind::Organization
+            || role.organization_id != Some(organization_id)
+        {
+            return Ok(None);
+        }
+        if role.archived_at.is_some() {
+            return Err(MidgardError::Storage(
+                "archived organization role permissions cannot be updated".to_string(),
+            ));
+        }
+        let permissions = sorted_permissions(permissions);
+        if role.builtin_key.as_deref() == Some(ORG_OWNER_BUILTIN) {
+            require_all_permissions(&permissions, PermissionKey::organization_permissions())?;
+        }
+        role.permissions = permissions;
+        role.updated_at = utc_now_rfc3339();
+        Ok(Some(role.clone()))
+    }
 }
 
 fn normalize_slug(slug: &str) -> MidgardResult<String> {
@@ -719,6 +1343,30 @@ fn required_name(name: &str, label: &str) -> MidgardResult<String> {
     }
 
     Ok(name.to_string())
+}
+
+fn sorted_permissions(permissions: Vec<PermissionKey>) -> Vec<PermissionKey> {
+    permissions
+        .into_iter()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn require_all_permissions(
+    permissions: &[PermissionKey],
+    required: Vec<PermissionKey>,
+) -> MidgardResult<()> {
+    if required
+        .into_iter()
+        .all(|required| permissions.iter().any(|permission| permission == &required))
+    {
+        return Ok(());
+    }
+
+    Err(MidgardError::Storage(
+        "owner role must retain all permissions".to_string(),
+    ))
 }
 
 #[cfg(test)]
@@ -900,6 +1548,7 @@ mod tests {
                 email: "Operator@Example.com ".to_string(),
                 display_name: "Operator".to_string(),
                 role: UserRole::Operator,
+                system_role_id: None,
                 password_hash: hash_password("valid-password").unwrap(),
                 active: true,
             })
@@ -923,6 +1572,7 @@ mod tests {
             email: "operator@example.com".to_string(),
             display_name: "Operator".to_string(),
             role: UserRole::Operator,
+            system_role_id: None,
             password_hash: hash_password("valid-password").unwrap(),
             active: true,
         };
@@ -942,6 +1592,7 @@ mod tests {
                 email: "operator@example.com".to_string(),
                 display_name: "Operator".to_string(),
                 role: UserRole::Operator,
+                system_role_id: None,
                 password_hash: hash_password("valid-password").unwrap(),
                 active: true,
             })
@@ -996,6 +1647,7 @@ mod tests {
                 organization_id: organization.id,
                 user_id,
                 role: crate::OrganizationRole::Owner,
+                role_id: None,
                 active: true,
             })
             .await
@@ -1033,6 +1685,7 @@ mod tests {
             organization_id: organization.id,
             user_id,
             role: crate::OrganizationRole::Operator,
+            role_id: None,
             active: true,
         };
 
@@ -1059,6 +1712,7 @@ mod tests {
                 organization_id: organization.id,
                 user_id,
                 role: crate::OrganizationRole::Owner,
+                role_id: None,
                 active: true,
             })
             .await
@@ -1070,6 +1724,7 @@ mod tests {
                 user_id,
                 OrganizationMembershipUpdate {
                     role: Some(crate::OrganizationRole::Viewer),
+                    role_id: None,
                     active: None,
                 },
             )

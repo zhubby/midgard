@@ -43,6 +43,7 @@ async fn app_with_role_and_provider(
             email: TEST_EMAIL.to_string(),
             display_name: "Test Operator".to_string(),
             role,
+            system_role_id: None,
             password_hash: hash_password(TEST_PASSWORD).unwrap(),
             active: true,
         })
@@ -61,6 +62,7 @@ async fn app_with_role_and_provider(
         organization_id: organization.id,
         user_id: user.id,
         role: organization_role_for_user_role(&user.role),
+        role_id: None,
         active: true,
     })
     .await
@@ -173,9 +175,11 @@ async fn login_sets_session_cookie_and_me_returns_user() {
     let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     let json: Value = serde_json::from_slice(&body).unwrap();
 
-    assert_eq!(json["email"], TEST_EMAIL);
-    assert_eq!(json["role"], "operator");
-    assert!(json.get("password_hash").is_none());
+    assert_eq!(json["user"]["email"], TEST_EMAIL);
+    assert_eq!(json["user"]["role"], "operator");
+    assert_eq!(json["system_role"]["builtin_key"], "system_admin");
+    assert!(json["system_permissions"].as_array().unwrap().len() > 1);
+    assert!(json["user"].get("password_hash").is_none());
 }
 
 #[tokio::test]
@@ -185,6 +189,7 @@ async fn login_rejects_bad_password_without_cookie() {
         email: TEST_EMAIL.to_string(),
         display_name: "Test Operator".to_string(),
         role: UserRole::Operator,
+        system_role_id: None,
         password_hash: hash_password(TEST_PASSWORD).unwrap(),
         active: true,
     })
@@ -288,6 +293,7 @@ async fn user_without_organizations_can_create_first_organization() {
         email: TEST_EMAIL.to_string(),
         display_name: "Test Operator".to_string(),
         role: UserRole::Operator,
+        system_role_id: None,
         password_hash: hash_password(TEST_PASSWORD).unwrap(),
         active: true,
     })
@@ -346,6 +352,7 @@ async fn non_member_cannot_access_workspace() {
         email: "outsider@example.com".to_string(),
         display_name: "Outsider".to_string(),
         role: UserRole::Operator,
+        system_role_id: None,
         password_hash: hash_password(TEST_PASSWORD).unwrap(),
         active: true,
     })
@@ -462,6 +469,166 @@ async fn admin_can_create_and_list_users() {
 }
 
 #[tokio::test]
+async fn system_admin_can_read_roles_but_cannot_manage_roles() {
+    let (app, cookie, _) = app_with_role(UserRole::Operator).await;
+
+    let read = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/rbac/system/roles")
+                .header(COOKIE, cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(read.status(), StatusCode::OK);
+
+    let write = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/rbac/system/roles")
+                .header(COOKIE, cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"slug":"auditor","name":"Auditor","permissions":["system.orgs.read"]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(write.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn system_owner_can_create_system_role_and_replace_permissions() {
+    let (app, cookie, _) = app_with_role(UserRole::Admin).await;
+
+    let create = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/rbac/system/roles")
+                .header(COOKIE, cookie.clone())
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"slug":"auditor","name":"Auditor","permissions":["system.orgs.read"]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create.status(), StatusCode::CREATED);
+    let body = to_bytes(create.into_body(), usize::MAX).await.unwrap();
+    let created: Value = serde_json::from_slice(&body).unwrap();
+    let id = created["id"].as_str().unwrap();
+
+    let update = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/rbac/system/roles/{id}/permissions"))
+                .header(COOKIE, cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"permissions":["system.users.read","system.orgs.read"]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(update.status(), StatusCode::OK);
+    let body = to_bytes(update.into_body(), usize::MAX).await.unwrap();
+    let updated: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(updated["permissions"].as_array().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn system_owner_role_must_retain_all_permissions() {
+    let (app, cookie, _) = app_with_role(UserRole::Admin).await;
+
+    let roles = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/rbac/system/roles")
+                .header(COOKIE, cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = to_bytes(roles.into_body(), usize::MAX).await.unwrap();
+    let roles: Value = serde_json::from_slice(&body).unwrap();
+    let owner_id = roles
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|role| role["slug"] == "owner")
+        .and_then(|role| role["id"].as_str())
+        .unwrap();
+
+    let update = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/rbac/system/roles/{owner_id}/permissions"))
+                .header(COOKIE, cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"permissions":["system.orgs.read"]}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(update.status(), StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn organization_owner_role_must_retain_all_permissions() {
+    let (app, cookie, _) = app_with_role(UserRole::Admin).await;
+
+    let roles = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/orgs/{TEST_ORG}/roles"))
+                .header(COOKIE, cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = to_bytes(roles.into_body(), usize::MAX).await.unwrap();
+    let roles: Value = serde_json::from_slice(&body).unwrap();
+    let owner_id = roles
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|role| role["slug"] == "owner")
+        .and_then(|role| role["id"].as_str())
+        .unwrap();
+
+    let update = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/orgs/{TEST_ORG}/roles/{owner_id}/permissions"))
+                .header(COOKIE, cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"permissions":["workspace.read"]}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(update.status(), StatusCode::CONFLICT);
+}
+
+#[tokio::test]
 async fn tools_endpoint_lists_registered_tools() {
     let (app, cookie, _) = app_with_role(UserRole::Viewer).await;
     let response = app
@@ -533,6 +700,7 @@ async fn app_accepts_injected_session_store() {
             email: TEST_EMAIL.to_string(),
             display_name: "Test Operator".to_string(),
             role: UserRole::Operator,
+            system_role_id: None,
             password_hash: hash_password(TEST_PASSWORD).unwrap(),
             active: true,
         })
@@ -551,6 +719,7 @@ async fn app_accepts_injected_session_store() {
         organization_id: organization.id,
         user_id: user.id,
         role: OrganizationRole::Operator,
+        role_id: None,
         active: true,
     })
     .await
@@ -736,6 +905,7 @@ async fn workspace_events_endpoint_emits_connected_snapshot() {
     assert!(text.contains("id:"));
     assert!(text.contains("event: connected"));
     assert!(text.contains("\"protocol_version\":1"));
+    assert!(text.contains("\"current_permissions\""));
     assert!(text.contains("event: middleware_snapshot"));
 }
 

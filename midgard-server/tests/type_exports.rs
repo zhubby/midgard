@@ -6,16 +6,17 @@ use midgard_agent::{
 };
 use midgard_core::{CompletionStatus, RiskLevel};
 use midgard_server::{
-    AddOrganizationMemberRequest, AgentRunResponse, ApprovalResponse, CreateAuthUserRequest,
-    CreateOrganizationRequest, CreateWorkspaceRequest, DashboardTone, LoginRequest, LogoutResponse,
-    MiddlewareDashboardState, MiddlewareMetric, MiddlewareTimelineEvent, MiddlewareWorkload,
-    PluginResponse, RunAccepted, UpdateAuthUserRequest, UpdateOrganizationMemberRequest,
-    UpdateWorkspaceRequest, WorkspaceEvent, WorkspaceEventPayload, WorkspaceEventType,
-    WorkspaceSnapshot,
+    AddOrganizationMemberRequest, AgentRunResponse, ApprovalResponse, AuthContext,
+    CreateAuthUserRequest, CreateOrganizationRequest, CreateRbacRoleRequest,
+    CreateWorkspaceRequest, DashboardTone, LoginRequest, LogoutResponse, MiddlewareDashboardState,
+    MiddlewareMetric, MiddlewareTimelineEvent, MiddlewareWorkload, OrganizationMemberView,
+    PluginResponse, ReplaceRolePermissionsRequest, RunAccepted, UpdateAuthUserRequest,
+    UpdateOrganizationMemberRequest, UpdateRbacRoleRequest, UpdateWorkspaceRequest, WorkspaceEvent,
+    WorkspaceEventPayload, WorkspaceEventType, WorkspaceSnapshot,
 };
 use midgard_storage::{
     AuthUser, Organization, OrganizationContext, OrganizationMembership, OrganizationRole,
-    UserRole, Workspace,
+    PermissionCatalogItem, PermissionKey, RbacRole, RbacScopeKind, UserRole, Workspace,
 };
 use midgard_tools::{ToolDefinition, ToolResult};
 use ts_rs::{Config, TS};
@@ -60,7 +61,12 @@ fn protocol_typescript() -> String {
         AgentSession::decl(&cfg),
         AgentRunEvent::decl(&cfg),
         UserRole::decl(&cfg),
+        RbacScopeKind::decl(&cfg),
+        PermissionKey::decl(&cfg),
+        PermissionCatalogItem::decl(&cfg),
+        RbacRole::decl(&cfg),
         AuthUser::decl(&cfg),
+        AuthContext::decl(&cfg),
         LoginRequest::decl(&cfg),
         CreateAuthUserRequest::decl(&cfg),
         UpdateAuthUserRequest::decl(&cfg),
@@ -75,6 +81,10 @@ fn protocol_typescript() -> String {
         UpdateWorkspaceRequest::decl(&cfg),
         AddOrganizationMemberRequest::decl(&cfg),
         UpdateOrganizationMemberRequest::decl(&cfg),
+        OrganizationMemberView::decl(&cfg),
+        CreateRbacRoleRequest::decl(&cfg),
+        UpdateRbacRoleRequest::decl(&cfg),
+        ReplaceRolePermissionsRequest::decl(&cfg),
         PluginResponse::decl(&cfg),
         RunAccepted::decl(&cfg),
         AgentRunResponse::decl(&cfg),

@@ -45,6 +45,7 @@ body {
 
 button,
 input,
+select,
 textarea {
   font: inherit;
 }
@@ -56,6 +57,7 @@ button {
 button,
 textarea,
 input,
+select,
 a {
   -webkit-tap-highlight-color: transparent;
 }
@@ -246,6 +248,7 @@ textarea:disabled {
 
 .button:focus-visible,
 input:focus-visible,
+select:focus-visible,
 textarea:focus-visible {
   outline: 2px solid hsl(var(--ring));
   outline-offset: 2px;
@@ -580,7 +583,8 @@ textarea {
   padding: 12px;
 }
 
-input {
+input,
+select {
   width: 100%;
   min-height: 42px;
   border: 1px solid hsl(var(--input));
@@ -598,6 +602,17 @@ textarea::placeholder {
 
 input::placeholder {
   color: hsl(var(--muted-foreground));
+}
+
+select {
+  appearance: none;
+  background:
+    linear-gradient(45deg, transparent 50%, hsl(var(--muted-foreground)) 50%)
+      right 14px center / 6px 6px no-repeat,
+    linear-gradient(135deg, hsl(var(--muted-foreground)) 50%, transparent 50%)
+      right 8px center / 6px 6px no-repeat,
+    hsl(var(--background));
+  padding-right: 30px;
 }
 
 .login-shell {
@@ -960,6 +975,129 @@ input::placeholder {
   padding: 14px;
 }
 
+.settings-grid {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.42fr) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.settings-panel {
+  overflow: hidden;
+}
+
+.settings-form {
+  display: grid;
+  gap: 12px;
+  padding: 18px 20px 20px;
+}
+
+.settings-table {
+  display: grid;
+}
+
+.settings-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(180px, 240px) auto;
+  gap: 12px;
+  align-items: center;
+  border-top: 1px solid hsl(var(--border));
+  padding: 14px 20px;
+}
+
+.settings-row > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.settings-row strong,
+.settings-row span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-row span,
+.permission-item small,
+.role-list-item span {
+  color: hsl(var(--muted-foreground));
+  font-size: 0.8rem;
+  line-height: 1.35;
+}
+
+.toggle-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: hsl(var(--muted-foreground));
+  font-size: 0.84rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.toggle-line input,
+.permission-item input {
+  width: 16px;
+  min-height: 16px;
+  accent-color: hsl(var(--primary));
+}
+
+.role-layout {
+  display: grid;
+  grid-template-columns: minmax(180px, 240px) minmax(0, 1fr);
+  min-height: 420px;
+}
+
+.role-list {
+  display: grid;
+  align-content: start;
+  border-right: 1px solid hsl(var(--border));
+}
+
+.role-list-item {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  border-bottom: 1px solid hsl(var(--border));
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+  cursor: pointer;
+  padding: 13px 16px;
+  text-align: left;
+}
+
+.role-list-item.active,
+.role-list-item:hover {
+  background: hsl(var(--accent));
+}
+
+.permission-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  align-content: start;
+  padding: 16px;
+}
+
+.permission-item {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  border: 1px solid hsl(var(--border));
+  border-radius: calc(var(--radius) - 2px);
+  background: hsl(var(--background));
+  cursor: pointer;
+  padding: 12px;
+}
+
+.permission-item span {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
 @media (max-width: 1160px) {
   .workspace-grid {
     grid-template-columns: 1fr;
@@ -1019,8 +1157,16 @@ input::placeholder {
   }
 
   .metric-grid,
-  .dashboard-columns {
+  .dashboard-columns,
+  .settings-grid,
+  .role-layout,
+  .permission-grid {
     grid-template-columns: 1fr;
+  }
+
+  .role-list {
+    border-right: 0;
+    border-bottom: 1px solid hsl(var(--border));
   }
 
   .dashboard-columns .dashboard-section + .dashboard-section {
@@ -1028,7 +1174,8 @@ input::placeholder {
     border-left: 0;
   }
 
-  .workload-row {
+  .workload-row,
+  .settings-row {
     grid-template-columns: 1fr;
     gap: 10px;
   }

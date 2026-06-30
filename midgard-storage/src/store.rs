@@ -12,6 +12,7 @@ use crate::org::{
     NewOrganization, NewOrganizationMembership, NewWorkspace, Organization, OrganizationContext,
     OrganizationMembership, OrganizationMembershipUpdate, Workspace, WorkspaceUpdate,
 };
+use crate::rbac::{NewRbacRole, PermissionKey, RbacRole, RbacRoleUpdate};
 
 #[async_trait]
 pub trait AgentSessionStore: Send + Sync {
@@ -87,6 +88,23 @@ pub trait AuthStore: Send + Sync {
     ) -> MidgardResult<Option<AuthUser>>;
     async fn revoke_auth_session(&self, token_hash: &str, revoked_at: String) -> MidgardResult<()>;
     async fn record_auth_audit_event(&self, event: NewAuthAuditEvent) -> MidgardResult<()>;
+    async fn list_system_roles(&self) -> MidgardResult<Vec<RbacRole>>;
+    async fn load_system_role(&self, id: Uuid) -> MidgardResult<Option<RbacRole>>;
+    async fn load_system_role_by_builtin_key(
+        &self,
+        builtin_key: &str,
+    ) -> MidgardResult<Option<RbacRole>>;
+    async fn create_system_role(&self, role: NewRbacRole) -> MidgardResult<RbacRole>;
+    async fn update_system_role(
+        &self,
+        id: Uuid,
+        update: RbacRoleUpdate,
+    ) -> MidgardResult<Option<RbacRole>>;
+    async fn replace_system_role_permissions(
+        &self,
+        id: Uuid,
+        permissions: Vec<PermissionKey>,
+    ) -> MidgardResult<Option<RbacRole>>;
 }
 
 pub type SharedAuthStore = Arc<dyn AuthStore>;
@@ -107,6 +125,10 @@ pub trait OrganizationStore: Send + Sync {
         organization_id: Uuid,
         user_id: Uuid,
     ) -> MidgardResult<Option<OrganizationMembership>>;
+    async fn list_memberships(
+        &self,
+        organization_id: Uuid,
+    ) -> MidgardResult<Vec<OrganizationMembership>>;
     async fn create_membership(
         &self,
         membership: NewOrganizationMembership,
@@ -130,6 +152,30 @@ pub trait OrganizationStore: Send + Sync {
         slug: &str,
         update: WorkspaceUpdate,
     ) -> MidgardResult<Option<Workspace>>;
+    async fn list_organization_roles(&self, organization_id: Uuid) -> MidgardResult<Vec<RbacRole>>;
+    async fn load_organization_role(
+        &self,
+        organization_id: Uuid,
+        id: Uuid,
+    ) -> MidgardResult<Option<RbacRole>>;
+    async fn load_organization_role_by_builtin_key(
+        &self,
+        organization_id: Uuid,
+        builtin_key: &str,
+    ) -> MidgardResult<Option<RbacRole>>;
+    async fn create_organization_role(&self, role: NewRbacRole) -> MidgardResult<RbacRole>;
+    async fn update_organization_role(
+        &self,
+        organization_id: Uuid,
+        id: Uuid,
+        update: RbacRoleUpdate,
+    ) -> MidgardResult<Option<RbacRole>>;
+    async fn replace_organization_role_permissions(
+        &self,
+        organization_id: Uuid,
+        id: Uuid,
+        permissions: Vec<PermissionKey>,
+    ) -> MidgardResult<Option<RbacRole>>;
 }
 
 pub type SharedOrganizationStore = Arc<dyn OrganizationStore>;

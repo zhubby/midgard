@@ -19,6 +19,7 @@ export interface AgentTraceItem {
 
 interface AgentConsoleProps {
   busy: boolean;
+  canOperate: boolean;
   connectionStatus: WorkspaceConnectionStatus;
   draft: string;
   error: string | null;
@@ -76,6 +77,7 @@ function messageAvatar(role: AgentMessage["role"]) {
 
 export function AgentConsole({
   busy,
+  canOperate,
   connectionStatus,
   draft,
   error,
@@ -119,7 +121,7 @@ export function AgentConsole({
         {quickPrompts.map((prompt) => (
           <button
             className="button button-ghost prompt-chip"
-            disabled={busy}
+            disabled={busy || !canOperate}
             key={prompt}
             type="button"
             onClick={() => onDraftChange(prompt)}
@@ -132,6 +134,11 @@ export function AgentConsole({
       {error && (
         <div className="inline-alert" role="alert">
           {error}
+        </div>
+      )}
+      {!canOperate && (
+        <div className="inline-alert" role="status">
+          This role can read workspace state but cannot run agent operations.
         </div>
       )}
 
@@ -218,7 +225,7 @@ export function AgentConsole({
             <div className="approval-actions">
               <button
                 className="button button-outline"
-                disabled={busy}
+                disabled={busy || !canOperate}
                 type="button"
                 onClick={() => onApproval("reject")}
               >
@@ -226,7 +233,7 @@ export function AgentConsole({
               </button>
               <button
                 className="button button-primary"
-                disabled={busy}
+                disabled={busy || !canOperate}
                 type="button"
                 onClick={() => onApproval("approve")}
               >
@@ -247,7 +254,7 @@ export function AgentConsole({
           placeholder="Ask the agent to inspect, summarize, or plan a middleware operation..."
           rows={4}
           value={draft}
-          disabled={busy}
+          disabled={busy || !canOperate}
           onChange={(e) => onDraftChange(e.target.value)}
         />
         <div className="composer-actions">
@@ -256,8 +263,12 @@ export function AgentConsole({
               ? "Live events connected."
               : "Waiting for workspace events."}
           </span>
-          <button className="button button-primary" disabled={busy} type="submit">
-            {busy ? "Running" : "Send"}
+          <button
+            className="button button-primary"
+            disabled={busy || !canOperate}
+            type="submit"
+          >
+            {busy ? "Running" : canOperate ? "Send" : "Read only"}
           </button>
         </div>
       </form>

@@ -3,11 +3,17 @@
 import { useEffect, useState } from "react";
 import { WorkspaceShell } from "@/components/WorkspaceShell";
 import { fetchOrganizationContext } from "@/lib/api";
-import type { AuthUser, OrganizationContext, Workspace } from "@/lib/types";
+import type {
+  AuthUser,
+  OrganizationContext,
+  PermissionKey,
+  Workspace,
+} from "@/lib/types";
 
 interface WorkspaceRouteProps {
   busyAuth: boolean;
   orgSlug: string;
+  systemPermissions: PermissionKey[];
   user: AuthUser;
   workspaceSlug: string;
   onLogout: () => void;
@@ -26,6 +32,7 @@ type WorkspaceRouteState =
 export function WorkspaceRoute({
   busyAuth,
   orgSlug,
+  systemPermissions,
   user,
   workspaceSlug,
   onLogout,
@@ -97,6 +104,7 @@ export function WorkspaceRoute({
     <WorkspaceShell
       busyAuth={busyAuth}
       context={state.context}
+      systemPermissions={systemPermissions}
       workspace={state.workspace}
       user={user}
       onLogout={onLogout}

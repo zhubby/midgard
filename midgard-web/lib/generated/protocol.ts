@@ -31,13 +31,23 @@ export type AgentRunEvent = { "type": "model_delta", content: string, } | { "typ
 
 export type UserRole = "admin" | "operator" | "viewer";
 
-export type AuthUser = { id: string, email: string, display_name: string, role: UserRole, active: boolean, created_at: string, updated_at: string, last_login_at?: string | null, };
+export type RbacScopeKind = "system" | "organization";
+
+export type PermissionKey = "system.users.read" | "system.users.manage" | "system.roles.read" | "system.roles.manage" | "system.orgs.create" | "system.orgs.read" | "org.read" | "org.manage" | "org.members.read" | "org.members.manage" | "org.roles.read" | "org.roles.manage" | "workspaces.read" | "workspaces.manage" | "workspace.read" | "workspace.operate";
+
+export type PermissionCatalogItem = { key: PermissionKey, scope_kind: RbacScopeKind, group: string, label: string, description: string, };
+
+export type RbacRole = { id: string, scope_kind: RbacScopeKind, organization_id?: string, slug: string, name: string, description?: string | null, builtin_key?: string | null, protected: boolean, archived_at?: string | null, created_at: string, updated_at: string, permissions: Array<PermissionKey>, };
+
+export type AuthUser = { id: string, email: string, display_name: string, role: UserRole, system_role_id: string, active: boolean, created_at: string, updated_at: string, last_login_at?: string | null, };
+
+export type AuthContext = { user: AuthUser, system_role: RbacRole, system_permissions: Array<PermissionKey>, };
 
 export type LoginRequest = { email: string, password: string, };
 
-export type CreateAuthUserRequest = { email: string, password: string, display_name: string | null, role: UserRole, active: boolean, };
+export type CreateAuthUserRequest = { email: string, password: string, display_name: string | null, role: UserRole | null, system_role_id: string | null, active: boolean, };
 
-export type UpdateAuthUserRequest = { password: string | null, display_name: string | null, role: UserRole | null, active: boolean | null, };
+export type UpdateAuthUserRequest = { password: string | null, display_name: string | null, role: UserRole | null, system_role_id: string | null, active: boolean | null, };
 
 export type LogoutResponse = { ok: boolean, };
 
@@ -45,11 +55,11 @@ export type OrganizationRole = "owner" | "admin" | "operator" | "viewer";
 
 export type Organization = { id: string, slug: string, name: string, created_by_user_id: string, archived_at?: string | null, created_at: string, updated_at: string, };
 
-export type OrganizationMembership = { id: string, organization_id: string, user_id: string, role: OrganizationRole, active: boolean, joined_at: string, created_at: string, updated_at: string, };
+export type OrganizationMembership = { id: string, organization_id: string, user_id: string, role: OrganizationRole, role_id: string, active: boolean, joined_at: string, created_at: string, updated_at: string, };
 
 export type Workspace = { id: string, organization_id: string, slug: string, name: string, archived_at?: string | null, created_at: string, updated_at: string, };
 
-export type OrganizationContext = { organization: Organization, membership: OrganizationMembership, workspaces: Array<Workspace>, };
+export type OrganizationContext = { organization: Organization, membership: OrganizationMembership, workspaces: Array<Workspace>, permissions: Array<PermissionKey>, };
 
 export type CreateOrganizationRequest = { name: string, slug: string | null, workspace_name: string | null, workspace_slug: string | null, };
 
@@ -57,9 +67,17 @@ export type CreateWorkspaceRequest = { name: string, slug: string | null, };
 
 export type UpdateWorkspaceRequest = { name: string | null, archived: boolean | null, };
 
-export type AddOrganizationMemberRequest = { email: string, role: OrganizationRole, };
+export type AddOrganizationMemberRequest = { email: string, role: OrganizationRole | null, role_id: string | null, };
 
-export type UpdateOrganizationMemberRequest = { role: OrganizationRole | null, active: boolean | null, };
+export type UpdateOrganizationMemberRequest = { role: OrganizationRole | null, role_id: string | null, active: boolean | null, };
+
+export type OrganizationMemberView = { membership: OrganizationMembership, user: AuthUser, };
+
+export type CreateRbacRoleRequest = { slug: string, name: string, description: string | null, permissions: Array<PermissionKey>, };
+
+export type UpdateRbacRoleRequest = { name: string | null, description: string | null, archived: boolean | null, };
+
+export type ReplaceRolePermissionsRequest = { permissions: Array<PermissionKey>, };
 
 export type PluginResponse = { id: string, name: string, middleware_kind: string, };
 
@@ -79,7 +97,7 @@ export type MiddlewareTimelineEvent = { id: string, namespace: string, target: s
 
 export type MiddlewareDashboardState = { metrics: Array<MiddlewareMetric>, workloads: Array<MiddlewareWorkload>, events: Array<MiddlewareTimelineEvent>, };
 
-export type WorkspaceSnapshot = { organization: Organization, workspace: Workspace, current_membership: OrganizationMembership, session?: AgentSession | null, tools: Array<ToolDefinition>, plugins: Array<PluginResponse>, middleware: MiddlewareDashboardState, approvals: Array<ApprovalRecord>, };
+export type WorkspaceSnapshot = { organization: Organization, workspace: Workspace, current_membership: OrganizationMembership, current_permissions: Array<PermissionKey>, session?: AgentSession | null, tools: Array<ToolDefinition>, plugins: Array<PluginResponse>, middleware: MiddlewareDashboardState, approvals: Array<ApprovalRecord>, };
 
 export type WorkspaceEventType = "connected" | "heartbeat" | "error" | "agent_session_updated" | "agent_run_started" | "agent_message_delta" | "agent_message_committed" | "tool_call_requested" | "tool_result_received" | "agent_run_completed" | "agent_run_failed" | "approval_required" | "approval_decided" | "middleware_snapshot" | "middleware_workload_upserted" | "middleware_workload_removed" | "middleware_metric_changed" | "middleware_event_observed" | "tool_catalog_updated" | "plugin_catalog_updated";
 

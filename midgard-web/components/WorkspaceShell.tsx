@@ -17,6 +17,7 @@ import type {
   MiddlewareDashboardState,
   OrganizationContext,
   PendingApproval,
+  PermissionKey,
   PluginResponse,
   ToolDefinition,
   Workspace,
@@ -33,6 +34,7 @@ interface WorkspaceState {
   plugins: PluginResponse[];
   middleware: MiddlewareDashboardState;
   approvals: ApprovalRecord[];
+  permissions: PermissionKey[];
   pendingApproval: PendingApproval | null;
   runStatus: AgentRunStatus | "idle";
   busy: boolean;
@@ -62,6 +64,7 @@ const initialState: WorkspaceState = {
   plugins: [],
   middleware: emptyMiddleware,
   approvals: [],
+  permissions: [],
   pendingApproval: null,
   runStatus: "idle",
   busy: false,
@@ -132,6 +135,7 @@ function reduceWorkspaceEvent(
         plugins: payload.snapshot.plugins,
         middleware: payload.snapshot.middleware,
         approvals: payload.snapshot.approvals,
+        permissions: payload.snapshot.current_permissions,
         pendingApproval: payload.snapshot.session?.pending_approval ?? null,
         runStatus: payload.snapshot.session?.status ?? "idle",
         error: null,
@@ -307,6 +311,7 @@ function reduceWorkspaceEvent(
 interface WorkspaceShellProps {
   busyAuth: boolean;
   context: OrganizationContext;
+  systemPermissions: PermissionKey[];
   workspace: Workspace;
   user: AuthUser;
   onLogout: () => void;
@@ -315,6 +320,7 @@ interface WorkspaceShellProps {
 export function WorkspaceShell({
   busyAuth,
   context,
+  systemPermissions,
   workspace,
   user,
   onLogout,
@@ -325,6 +331,12 @@ export function WorkspaceShell({
   );
   const orgSlug = context.organization.slug;
   const workspaceSlug = workspace.slug;
+  const canOperate = state.permissions.includes("workspace.operate");
+  const canManageOrgRoles = context.permissions.includes("org.roles.read");
+  const canManageMembers = context.permissions.includes("org.members.read");
+  const canReadSystemAdmin =
+    systemPermissions.includes("system.users.read") ||
+    systemPermissions.includes("system.roles.read");
 
   useEffect(() => {
     const connection = connectWorkspaceEvents({
@@ -340,7 +352,7 @@ export function WorkspaceShell({
 
   async function handleSend(prompt: string) {
     const message = prompt.trim();
-    if (!message || state.busy) return;
+    if (!message || state.busy || !canOperate) return;
 
     dispatch({ type: "run_busy", busy: true });
     dispatch({ type: "error", message: null });
@@ -363,7 +375,7 @@ export function WorkspaceShell({
   }
 
   async function handleApproval(decision: "approve" | "reject") {
-    if (!state.session || !state.pendingApproval) return;
+    if (!state.session || !state.pendingApproval || !canOperate) return;
 
     dispatch({ type: "run_busy", busy: true });
     dispatch({ type: "error", message: null });
@@ -412,7 +424,23 @@ export function WorkspaceShell({
           <div className="user-chip" aria-label="Signed in user">
             <strong>{user.display_name || user.email}</strong>
             <span>{user.role}</span>
+            <span>{context.membership.role}</span>
           </div>
+          {canManageMembers && (
+            <a className="button button-outline" href={`/orgs/${orgSlug}/settings/members`}>
+              Members
+            </a>
+          )}
+          {canManageOrgRoles && (
+            <a className="button button-outline" href={`/orgs/${orgSlug}/settings/roles`}>
+              Roles
+            </a>
+          )}
+          {canReadSystemAdmin && (
+            <a className="button button-outline" href="/admin/users">
+              Admin
+            </a>
+          )}
           <button
             className="button button-outline logout-button"
             disabled={busyAuth}
@@ -427,6 +455,7 @@ export function WorkspaceShell({
       <section className="workspace-grid" aria-label="Midgard operations workspace">
         <AgentConsole
           busy={state.busy}
+          canOperate={canOperate}
           connectionStatus={state.connectionStatus}
           draft={draft}
           error={state.error}

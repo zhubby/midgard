@@ -3,15 +3,16 @@
 import { type ReactNode, useEffect, useState } from "react";
 import { LoginPage } from "@/components/LoginPage";
 import { fetchCurrentUser, login, logout } from "@/lib/api";
-import type { AuthUser } from "@/lib/types";
+import type { AuthContext, AuthUser } from "@/lib/types";
 
 type AuthState =
-  | { status: "loading"; user: null; error: null }
-  | { status: "anonymous"; user: null; error: string | null }
-  | { status: "authenticated"; user: AuthUser; error: null };
+  | { status: "loading"; auth: null; error: null }
+  | { status: "anonymous"; auth: null; error: string | null }
+  | { status: "authenticated"; auth: AuthContext; error: null };
 
 interface AuthGateProps {
   children: (props: {
+    auth: AuthContext;
     busyAuth: boolean;
     user: AuthUser;
     onLogout: () => void;
@@ -21,7 +22,7 @@ interface AuthGateProps {
 export function AuthGate({ children }: AuthGateProps) {
   const [auth, setAuth] = useState<AuthState>({
     status: "loading",
-    user: null,
+    auth: null,
     error: null,
   });
   const [busy, setBusy] = useState(false);
@@ -40,17 +41,17 @@ export function AuthGate({ children }: AuthGateProps) {
       .then((user) => {
         if (!user) {
           if (!cancelled) {
-            setAuth({ status: "anonymous", user: null, error: null });
+            setAuth({ status: "anonymous", auth: null, error: null });
           }
           return;
         }
         if (!cancelled) {
-          setAuth({ status: "authenticated", user, error: null });
+          setAuth({ status: "authenticated", auth: user, error: null });
         }
       })
       .catch(() => {
         if (!cancelled) {
-          setAuth({ status: "anonymous", user: null, error: null });
+          setAuth({ status: "anonymous", auth: null, error: null });
         }
       });
 
@@ -63,15 +64,15 @@ export function AuthGate({ children }: AuthGateProps) {
   async function handleLogin(email: string, password: string) {
     if (busy) return;
     setBusy(true);
-    setAuth({ status: "anonymous", user: null, error: null });
+    setAuth({ status: "anonymous", auth: null, error: null });
 
     try {
       const user = await login(email, password);
-      setAuth({ status: "authenticated", user, error: null });
+      setAuth({ status: "authenticated", auth: user, error: null });
     } catch {
       setAuth({
         status: "anonymous",
-        user: null,
+        auth: null,
         error: "Invalid email or password.",
       });
     } finally {
@@ -85,7 +86,7 @@ export function AuthGate({ children }: AuthGateProps) {
       await logout();
     } finally {
       setBusy(false);
-      setAuth({ status: "anonymous", user: null, error: null });
+      setAuth({ status: "anonymous", auth: null, error: null });
     }
   }
 
@@ -108,7 +109,12 @@ export function AuthGate({ children }: AuthGateProps) {
   if (auth.status === "authenticated") {
     return (
       <>
-        {children({ busyAuth: busy, user: auth.user, onLogout: handleLogout })}
+        {children({
+          auth: auth.auth,
+          busyAuth: busy,
+          user: auth.auth.user,
+          onLogout: handleLogout,
+        })}
       </>
     );
   }

@@ -19,9 +19,10 @@ use midgard_agent::{
 use midgard_controller::{MiddlewareController, MiddlewarePlugin};
 use midgard_plugin_example::ExampleRedisPlugin;
 use midgard_storage::{
-    MemoryAgentSessionStore, MemoryAuthStore, MemoryOrganizationStore, NewOrganization,
-    NewOrganizationMembership, NewWorkspace, Organization, OrganizationContext,
-    OrganizationMembership, OrganizationMembershipUpdate, OrganizationRole,
+    permission_catalog, MemoryAgentSessionStore, MemoryAuthStore, MemoryOrganizationStore,
+    NewOrganization, NewOrganizationMembership, NewRbacRole, NewWorkspace, Organization,
+    OrganizationContext, OrganizationMembership, OrganizationMembershipUpdate, OrganizationRole,
+    PermissionCatalogItem, PermissionKey, RbacRole, RbacRoleUpdate, RbacScopeKind,
     SharedAgentSessionStore, SharedAuthStore, SharedOrganizationStore, Workspace, WorkspaceUpdate,
 };
 use midgard_tools::{ToolDefinition, ToolRegistry};
@@ -36,7 +37,8 @@ mod auth;
 mod workspace;
 
 pub use auth::{
-    AuthSettings, CreateAuthUserRequest, LoginRequest, LogoutResponse, UpdateAuthUserRequest,
+    AuthContext, AuthSettings, CreateAuthUserRequest, LoginRequest, LogoutResponse,
+    UpdateAuthUserRequest,
 };
 pub use workspace::{
     agent_run_event_payload, DashboardTone, MiddlewareDashboardState, MiddlewareMetric,
@@ -130,19 +132,41 @@ pub fn app_with_provider_auth_and_orgs(
         .route("/api/auth/login", post(auth::login))
         .route("/api/auth/logout", post(auth::logout))
         .route("/api/auth/me", get(auth::me))
+        .route("/api/permissions/catalog", get(permission_catalog_endpoint))
         .route(
             "/api/auth/users",
             get(auth::list_users).post(auth::create_user),
         )
         .route("/api/auth/users/{id}", patch(auth::update_user))
         .route(
+            "/api/rbac/system/roles",
+            get(list_system_roles).post(create_system_role),
+        )
+        .route("/api/rbac/system/roles/{id}", patch(update_system_role))
+        .route(
+            "/api/rbac/system/roles/{id}/permissions",
+            axum::routing::put(replace_system_role_permissions),
+        )
+        .route(
             "/api/orgs",
             get(list_org_contexts).post(create_organization),
         )
         .route("/api/orgs/{org_slug}", get(get_organization_context))
         .route(
+            "/api/orgs/{org_slug}/roles",
+            get(list_organization_roles).post(create_organization_role),
+        )
+        .route(
+            "/api/orgs/{org_slug}/roles/{id}",
+            patch(update_organization_role),
+        )
+        .route(
+            "/api/orgs/{org_slug}/roles/{id}/permissions",
+            axum::routing::put(replace_organization_role_permissions),
+        )
+        .route(
             "/api/orgs/{org_slug}/members",
-            post(add_organization_member),
+            get(list_organization_members).post(add_organization_member),
         )
         .route(
             "/api/orgs/{org_slug}/members/{user_id}",
@@ -194,7 +218,13 @@ pub fn app_with_provider_auth_and_orgs(
                     HeaderValue::from_static("http://localhost:3000"),
                     HeaderValue::from_static("http://127.0.0.1:3000"),
                 ])
-                .allow_methods([Method::GET, Method::POST, Method::PATCH, Method::OPTIONS])
+                .allow_methods([
+                    Method::GET,
+                    Method::POST,
+                    Method::PATCH,
+                    Method::PUT,
+                    Method::OPTIONS,
+                ])
                 .allow_headers([
                     ACCEPT,
                     AUTHORIZATION,
@@ -212,10 +242,18 @@ async fn healthz() -> impl IntoResponse {
     })
 }
 
+async fn permission_catalog_endpoint(
+    _user: auth::AuthenticatedUser,
+) -> Json<Vec<PermissionCatalogItem>> {
+    Json(permission_catalog())
+}
+
 async fn list_org_contexts(
     user: auth::AuthenticatedUser,
     State(state): State<AppState>,
 ) -> Result<Json<Vec<OrganizationContext>>, AppError> {
+    user.require_system_permission(&state, PermissionKey::SystemOrgsRead)
+        .await?;
     Ok(Json(
         state
             .orgs
@@ -230,6 +268,8 @@ async fn create_organization(
     State(state): State<AppState>,
     Json(request): Json<CreateOrganizationRequest>,
 ) -> Result<(StatusCode, Json<OrganizationContext>), AppError> {
+    user.require_system_permission(&state, PermissionKey::SystemOrgsCreate)
+        .await?;
     let name = required_request_name(&request.name, "organization name")?;
     let slug = request
         .slug
@@ -257,6 +297,7 @@ async fn create_organization(
             organization_id: organization.id,
             user_id: user.0.id,
             role: OrganizationRole::Owner,
+            role_id: None,
             active: true,
         })
         .await
@@ -277,6 +318,7 @@ async fn create_organization(
             organization,
             membership,
             workspaces: vec![workspace],
+            permissions: PermissionKey::organization_permissions(),
         }),
     ))
 }
@@ -286,9 +328,189 @@ async fn get_organization_context(
     Path(org_slug): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<OrganizationContext>, AppError> {
+    let context = load_organization_context(&state, &user, &org_slug).await?;
+    require_org_permission(&state, &context.membership, PermissionKey::OrgRead).await?;
+    Ok(Json(context))
+}
+
+async fn list_system_roles(
+    user: auth::AuthenticatedUser,
+    State(state): State<AppState>,
+) -> Result<Json<Vec<RbacRole>>, AppError> {
+    user.require_system_permission(&state, PermissionKey::SystemRolesRead)
+        .await?;
+    Ok(Json(state.auth.list_system_roles().await?))
+}
+
+async fn create_system_role(
+    user: auth::AuthenticatedUser,
+    State(state): State<AppState>,
+    Json(request): Json<CreateRbacRoleRequest>,
+) -> Result<(StatusCode, Json<RbacRole>), AppError> {
+    user.require_system_permission(&state, PermissionKey::SystemRolesManage)
+        .await?;
+    let role = state
+        .auth
+        .create_system_role(NewRbacRole {
+            scope_kind: RbacScopeKind::System,
+            organization_id: None,
+            slug: request.slug,
+            name: request.name,
+            description: request.description,
+            builtin_key: None,
+            protected: false,
+            permissions: request.permissions,
+        })
+        .await
+        .map_err(storage_app_error)?;
+
+    Ok((StatusCode::CREATED, Json(role)))
+}
+
+async fn update_system_role(
+    user: auth::AuthenticatedUser,
+    Path(id): Path<Uuid>,
+    State(state): State<AppState>,
+    Json(request): Json<UpdateRbacRoleRequest>,
+) -> Result<Json<RbacRole>, AppError> {
+    user.require_system_permission(&state, PermissionKey::SystemRolesManage)
+        .await?;
+    let role = state
+        .auth
+        .update_system_role(
+            id,
+            RbacRoleUpdate {
+                name: request.name,
+                description: request.description,
+                archived: request.archived,
+            },
+        )
+        .await
+        .map_err(storage_app_error)?
+        .ok_or_else(|| AppError::NotFound("system role not found".to_string()))?;
+
+    Ok(Json(role))
+}
+
+async fn replace_system_role_permissions(
+    user: auth::AuthenticatedUser,
+    Path(id): Path<Uuid>,
+    State(state): State<AppState>,
+    Json(request): Json<ReplaceRolePermissionsRequest>,
+) -> Result<Json<RbacRole>, AppError> {
+    user.require_system_permission(&state, PermissionKey::SystemRolesManage)
+        .await?;
+    let role = state
+        .auth
+        .replace_system_role_permissions(id, request.permissions)
+        .await
+        .map_err(storage_app_error)?
+        .ok_or_else(|| AppError::NotFound("system role not found".to_string()))?;
+
+    Ok(Json(role))
+}
+
+async fn list_organization_roles(
+    user: auth::AuthenticatedUser,
+    Path(org_slug): Path<String>,
+    State(state): State<AppState>,
+) -> Result<Json<Vec<RbacRole>>, AppError> {
+    let context = load_organization_context(&state, &user, &org_slug).await?;
+    require_org_permission(&state, &context.membership, PermissionKey::OrgRolesRead).await?;
     Ok(Json(
-        load_organization_context(&state, &user, &org_slug).await?,
+        state
+            .orgs
+            .list_organization_roles(context.organization.id)
+            .await?,
     ))
+}
+
+async fn create_organization_role(
+    user: auth::AuthenticatedUser,
+    Path(org_slug): Path<String>,
+    State(state): State<AppState>,
+    Json(request): Json<CreateRbacRoleRequest>,
+) -> Result<(StatusCode, Json<RbacRole>), AppError> {
+    let context = load_organization_context(&state, &user, &org_slug).await?;
+    require_org_permission(&state, &context.membership, PermissionKey::OrgRolesManage).await?;
+    let role = state
+        .orgs
+        .create_organization_role(NewRbacRole {
+            scope_kind: RbacScopeKind::Organization,
+            organization_id: Some(context.organization.id),
+            slug: request.slug,
+            name: request.name,
+            description: request.description,
+            builtin_key: None,
+            protected: false,
+            permissions: request.permissions,
+        })
+        .await
+        .map_err(storage_app_error)?;
+
+    Ok((StatusCode::CREATED, Json(role)))
+}
+
+async fn update_organization_role(
+    user: auth::AuthenticatedUser,
+    Path((org_slug, id)): Path<(String, Uuid)>,
+    State(state): State<AppState>,
+    Json(request): Json<UpdateRbacRoleRequest>,
+) -> Result<Json<RbacRole>, AppError> {
+    let context = load_organization_context(&state, &user, &org_slug).await?;
+    require_org_permission(&state, &context.membership, PermissionKey::OrgRolesManage).await?;
+    let role = state
+        .orgs
+        .update_organization_role(
+            context.organization.id,
+            id,
+            RbacRoleUpdate {
+                name: request.name,
+                description: request.description,
+                archived: request.archived,
+            },
+        )
+        .await
+        .map_err(storage_app_error)?
+        .ok_or_else(|| AppError::NotFound("organization role not found".to_string()))?;
+
+    Ok(Json(role))
+}
+
+async fn replace_organization_role_permissions(
+    user: auth::AuthenticatedUser,
+    Path((org_slug, id)): Path<(String, Uuid)>,
+    State(state): State<AppState>,
+    Json(request): Json<ReplaceRolePermissionsRequest>,
+) -> Result<Json<RbacRole>, AppError> {
+    let context = load_organization_context(&state, &user, &org_slug).await?;
+    require_org_permission(&state, &context.membership, PermissionKey::OrgRolesManage).await?;
+    let role = state
+        .orgs
+        .replace_organization_role_permissions(context.organization.id, id, request.permissions)
+        .await
+        .map_err(storage_app_error)?
+        .ok_or_else(|| AppError::NotFound("organization role not found".to_string()))?;
+
+    Ok(Json(role))
+}
+
+async fn list_organization_members(
+    user: auth::AuthenticatedUser,
+    Path(org_slug): Path<String>,
+    State(state): State<AppState>,
+) -> Result<Json<Vec<OrganizationMemberView>>, AppError> {
+    let context = load_organization_context(&state, &user, &org_slug).await?;
+    require_org_permission(&state, &context.membership, PermissionKey::OrgMembersRead).await?;
+    let memberships = state.orgs.list_memberships(context.organization.id).await?;
+    let mut members = Vec::with_capacity(memberships.len());
+    for membership in memberships {
+        if let Some(user) = state.auth.load_user_by_id(membership.user_id).await? {
+            members.push(OrganizationMemberView { membership, user });
+        }
+    }
+
+    Ok(Json(members))
 }
 
 async fn add_organization_member(
@@ -298,7 +520,7 @@ async fn add_organization_member(
     Json(request): Json<AddOrganizationMemberRequest>,
 ) -> Result<(StatusCode, Json<OrganizationMembership>), AppError> {
     let context = load_organization_context(&state, &user, &org_slug).await?;
-    require_org_manager(&context.membership)?;
+    require_org_permission(&state, &context.membership, PermissionKey::OrgMembersManage).await?;
     let email = midgard_storage::normalize_email(&request.email);
     let target = state
         .auth
@@ -312,7 +534,8 @@ async fn add_organization_member(
         .create_membership(NewOrganizationMembership {
             organization_id: context.organization.id,
             user_id: target.id,
-            role: request.role,
+            role: request.role.unwrap_or(OrganizationRole::Viewer),
+            role_id: request.role_id,
             active: true,
         })
         .await
@@ -328,7 +551,7 @@ async fn update_organization_member(
     Json(request): Json<UpdateOrganizationMemberRequest>,
 ) -> Result<Json<OrganizationMembership>, AppError> {
     let context = load_organization_context(&state, &user, &org_slug).await?;
-    require_org_manager(&context.membership)?;
+    require_org_permission(&state, &context.membership, PermissionKey::OrgMembersManage).await?;
     let membership = state
         .orgs
         .update_membership(
@@ -336,6 +559,7 @@ async fn update_organization_member(
             user_id,
             OrganizationMembershipUpdate {
                 role: request.role,
+                role_id: request.role_id,
                 active: request.active,
             },
         )
@@ -352,6 +576,7 @@ async fn list_organization_workspaces(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<Workspace>>, AppError> {
     let context = load_organization_context(&state, &user, &org_slug).await?;
+    require_org_permission(&state, &context.membership, PermissionKey::WorkspacesRead).await?;
     Ok(Json(context.workspaces))
 }
 
@@ -362,7 +587,7 @@ async fn create_workspace(
     Json(request): Json<CreateWorkspaceRequest>,
 ) -> Result<(StatusCode, Json<Workspace>), AppError> {
     let context = load_organization_context(&state, &user, &org_slug).await?;
-    require_org_manager(&context.membership)?;
+    require_org_permission(&state, &context.membership, PermissionKey::WorkspacesManage).await?;
     let name = required_request_name(&request.name, "workspace name")?;
     let slug = request
         .slug
@@ -388,7 +613,7 @@ async fn update_workspace(
     Json(request): Json<UpdateWorkspaceRequest>,
 ) -> Result<Json<Workspace>, AppError> {
     let context = load_organization_context(&state, &user, &org_slug).await?;
-    require_org_manager(&context.membership)?;
+    require_org_permission(&state, &context.membership, PermissionKey::WorkspacesManage).await?;
     let workspace = state
         .orgs
         .update_workspace(
@@ -411,7 +636,8 @@ async fn list_workspace_tools(
     Path((org_slug, workspace_slug)): Path<(String, String)>,
     State(state): State<AppState>,
 ) -> Result<Json<Vec<ToolDefinition>>, AppError> {
-    let _scope = load_workspace_scope(&state, &user, &org_slug, &workspace_slug).await?;
+    let scope = load_workspace_scope(&state, &user, &org_slug, &workspace_slug).await?;
+    require_org_permission(&state, &scope.membership, PermissionKey::WorkspaceRead).await?;
     Ok(Json(state.tools.definitions()))
 }
 
@@ -420,7 +646,8 @@ async fn list_workspace_plugins(
     Path((org_slug, workspace_slug)): Path<(String, String)>,
     State(state): State<AppState>,
 ) -> Result<Json<Vec<PluginResponse>>, AppError> {
-    let _scope = load_workspace_scope(&state, &user, &org_slug, &workspace_slug).await?;
+    let scope = load_workspace_scope(&state, &user, &org_slug, &workspace_slug).await?;
+    require_org_permission(&state, &scope.membership, PermissionKey::WorkspaceRead).await?;
     Ok(Json((*state.plugins).clone()))
 }
 
@@ -431,7 +658,7 @@ async fn create_session(
     Json(request): Json<CreateSessionRequest>,
 ) -> Result<Json<AgentSession>, AppError> {
     let scope = load_workspace_scope(&state, &user, &org_slug, &workspace_slug).await?;
-    require_org_operator(&scope.membership)?;
+    require_org_permission(&state, &scope.membership, PermissionKey::WorkspaceOperate).await?;
     let session = state
         .sessions
         .create_session_in_workspace(scope.workspace.id, request.goal)
@@ -453,7 +680,7 @@ async fn send_message(
     Json(request): Json<SendMessageRequest>,
 ) -> Result<Json<AgentSession>, AppError> {
     let scope = load_workspace_scope(&state, &user, &org_slug, &workspace_slug).await?;
-    require_org_operator(&scope.membership)?;
+    require_org_permission(&state, &scope.membership, PermissionKey::WorkspaceOperate).await?;
     let session = state
         .sessions
         .append_user_message_in_workspace(scope.workspace.id, id, request.message)
@@ -484,7 +711,7 @@ async fn run_agent(
     State(state): State<AppState>,
 ) -> Result<(StatusCode, Json<RunAccepted>), AppError> {
     let scope = load_workspace_scope(&state, &user, &org_slug, &workspace_slug).await?;
-    require_org_operator(&scope.membership)?;
+    require_org_permission(&state, &scope.membership, PermissionKey::WorkspaceOperate).await?;
     if state
         .sessions
         .load_session_in_workspace(scope.workspace.id, id)
@@ -512,7 +739,7 @@ async fn stream_agent(
     State(state): State<AppState>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, AppError> {
     let scope = load_workspace_scope(&state, &user, &org_slug, &workspace_slug).await?;
-    require_org_operator(&scope.membership)?;
+    require_org_permission(&state, &scope.membership, PermissionKey::WorkspaceOperate).await?;
     let session = load_or_resumed_session(&state, scope.workspace.id, id).await?;
     let result = state.runner.run(session).await?;
     state
@@ -533,7 +760,7 @@ async fn record_approval(
     Json(request): Json<ApprovalRequest>,
 ) -> Result<Json<ApprovalResponse>, AppError> {
     let scope = load_workspace_scope(&state, &user, &org_slug, &workspace_slug).await?;
-    require_org_operator(&scope.membership)?;
+    require_org_permission(&state, &scope.membership, PermissionKey::WorkspaceOperate).await?;
     let mut session = load_existing_session(&state, scope.workspace.id, id).await?;
     let actor = user.actor();
     let approval = session.record_approval_decision(request.decision.clone())?;
@@ -574,6 +801,7 @@ async fn list_approval_records(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<ApprovalRecord>>, AppError> {
     let scope = load_workspace_scope(&state, &user, &org_slug, &workspace_slug).await?;
+    require_org_permission(&state, &scope.membership, PermissionKey::WorkspaceRead).await?;
     let _session = load_existing_session(&state, scope.workspace.id, id).await?;
     Ok(Json(state.sessions.list_approval_records(id).await?))
 }
@@ -622,6 +850,7 @@ async fn workspace_events(
     State(state): State<AppState>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, AppError> {
     let scope = load_workspace_scope(&state, &user, &org_slug, &workspace_slug).await?;
+    require_org_permission(&state, &scope.membership, PermissionKey::WorkspaceRead).await?;
     let workspace_id = scope.workspace.id.to_string();
     let last_event_id = headers
         .get("last-event-id")
@@ -722,6 +951,7 @@ async fn workspace_snapshot(
         organization: scope.organization.clone(),
         workspace: scope.workspace.clone(),
         current_membership: scope.membership.clone(),
+        current_permissions: scope.permissions.clone(),
         session,
         tools: state.tools.definitions(),
         plugins: (*state.plugins).clone(),
@@ -734,6 +964,7 @@ async fn workspace_snapshot(
 struct WorkspaceScope {
     organization: Organization,
     membership: OrganizationMembership,
+    permissions: Vec<PermissionKey>,
     workspace: Workspace,
 }
 
@@ -759,11 +990,13 @@ async fn load_organization_context(
         .list_workspaces(organization.id)
         .await
         .map_err(storage_app_error)?;
+    let permissions = organization_permissions(state, &membership).await?;
 
     Ok(OrganizationContext {
         organization,
         membership,
         workspaces,
+        permissions,
     })
 }
 
@@ -784,28 +1017,45 @@ async fn load_workspace_scope(
     Ok(WorkspaceScope {
         organization: context.organization,
         membership: context.membership,
+        permissions: context.permissions,
         workspace,
     })
 }
 
-fn require_org_operator(membership: &OrganizationMembership) -> Result<(), AppError> {
-    if membership.role.can_operate() {
-        return Ok(());
+async fn organization_permissions(
+    state: &AppState,
+    membership: &OrganizationMembership,
+) -> Result<Vec<PermissionKey>, AppError> {
+    let role = state
+        .orgs
+        .load_organization_role(membership.organization_id, membership.role_id)
+        .await?
+        .ok_or_else(|| AppError::Forbidden("organization role is not available".to_string()))?;
+    if role.archived_at.is_some() {
+        return Ok(Vec::new());
     }
 
-    Err(AppError::Forbidden(
-        "organization operator role is required".to_string(),
-    ))
+    Ok(role.permissions)
 }
 
-fn require_org_manager(membership: &OrganizationMembership) -> Result<(), AppError> {
-    if membership.role.can_manage_org() {
+async fn require_org_permission(
+    state: &AppState,
+    membership: &OrganizationMembership,
+    permission: PermissionKey,
+) -> Result<(), AppError> {
+    let role = state
+        .orgs
+        .load_organization_role(membership.organization_id, membership.role_id)
+        .await?
+        .ok_or_else(|| AppError::Forbidden("organization role is not available".to_string()))?;
+    if role.has_permission(&permission) {
         return Ok(());
     }
 
-    Err(AppError::Forbidden(
-        "organization admin role is required".to_string(),
-    ))
+    Err(AppError::Forbidden(format!(
+        "permission {} is required",
+        permission.as_str()
+    )))
 }
 
 fn storage_app_error(err: midgard_core::MidgardError) -> AppError {
@@ -813,6 +1063,8 @@ fn storage_app_error(err: midgard_core::MidgardError) -> AppError {
         midgard_core::MidgardError::Storage(message)
             if message.contains("already exists")
                 || message.contains("last organization owner")
+                || message.contains("last system owner")
+                || message.contains("owner role must retain all permissions")
                 || message.contains("does not belong to workspace") =>
         {
             AppError::Conflict(message)
@@ -1016,7 +1268,11 @@ pub struct UpdateWorkspaceRequest {
 #[derive(Clone, Debug, Deserialize, TS)]
 pub struct AddOrganizationMemberRequest {
     pub email: String,
-    pub role: OrganizationRole,
+    #[serde(default)]
+    pub role: Option<OrganizationRole>,
+    #[serde(default)]
+    #[ts(type = "string | null")]
+    pub role_id: Option<Uuid>,
 }
 
 #[derive(Clone, Debug, Deserialize, TS)]
@@ -1024,7 +1280,41 @@ pub struct UpdateOrganizationMemberRequest {
     #[serde(default)]
     pub role: Option<OrganizationRole>,
     #[serde(default)]
+    #[ts(type = "string | null")]
+    pub role_id: Option<Uuid>,
+    #[serde(default)]
     pub active: Option<bool>,
+}
+
+#[derive(Clone, Debug, Serialize, TS)]
+pub struct OrganizationMemberView {
+    pub membership: OrganizationMembership,
+    pub user: midgard_storage::AuthUser,
+}
+
+#[derive(Clone, Debug, Deserialize, TS)]
+pub struct CreateRbacRoleRequest {
+    pub slug: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub permissions: Vec<PermissionKey>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, TS)]
+pub struct UpdateRbacRoleRequest {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub archived: Option<bool>,
+}
+
+#[derive(Clone, Debug, Deserialize, TS)]
+pub struct ReplaceRolePermissionsRequest {
+    pub permissions: Vec<PermissionKey>,
 }
 
 #[derive(Debug, Deserialize)]
