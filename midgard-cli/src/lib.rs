@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{Args as ClapArgs, Parser, Subcommand};
 use midgard_agent::OpenAiCompatibleProvider;
 use midgard_config::{
     default_config_path, ensure_default_config, load_or_create, OperatorControlConfig,
@@ -19,6 +19,7 @@ use std::{
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::Arc,
+    time::Duration,
 };
 use toasty_cli::{Config as ToastyConfig, ToastyCli};
 use tonic::transport::{Identity, Server as GrpcServer, ServerTlsConfig};
@@ -61,6 +62,12 @@ enum Command {
     Auth {
         #[command(subcommand)]
         command: AuthCommand,
+    },
+
+    /// Run Midgard-native middleware operators
+    Operator {
+        #[command(subcommand)]
+        command: Box<OperatorCommand>,
     },
 }
 
@@ -118,6 +125,72 @@ enum AuthCommand {
     },
 }
 
+#[derive(Debug, Subcommand)]
+enum OperatorCommand {
+    /// Run the Midgard Valkey Kubernetes operator
+    Valkey(ValkeyOperatorArgs),
+}
+
+#[derive(Debug, ClapArgs)]
+struct ValkeyOperatorArgs {
+    #[arg(
+        long,
+        env = "MIDGARD_OPERATOR_SERVER_ENDPOINT",
+        default_value = "https://127.0.0.1:8081"
+    )]
+    server_endpoint: String,
+
+    #[arg(long, env = "MIDGARD_WORKSPACE_ID")]
+    workspace_id: String,
+
+    #[arg(long, env = "MIDGARD_OPERATOR_TOKEN")]
+    registration_token: String,
+
+    #[arg(long, env = "MIDGARD_OPERATOR_ID")]
+    operator_id: Option<String>,
+
+    #[arg(
+        long = "watch-namespace",
+        env = "MIDGARD_VALKEY_WATCH_NAMESPACES",
+        value_delimiter = ','
+    )]
+    watch_namespace: Vec<String>,
+
+    #[arg(long, env = "MIDGARD_OPERATOR_TLS_CA_PATH")]
+    tls_ca_path: Option<PathBuf>,
+
+    #[arg(long, env = "MIDGARD_OPERATOR_INSECURE", default_value_t = false)]
+    allow_insecure_without_tls: bool,
+
+    #[arg(long, env = "MIDGARD_VALKEY_LOCK_NAMESPACE", default_value = midgard_valkey_operator::lease::DEFAULT_LOCK_NAMESPACE)]
+    lock_namespace: String,
+
+    #[arg(long, env = "MIDGARD_VALKEY_LOCK_NAME", default_value = midgard_valkey_operator::lease::DEFAULT_LOCK_NAME)]
+    lock_name: String,
+
+    #[arg(
+        long,
+        env = "MIDGARD_VALKEY_LEASE_DURATION_SECONDS",
+        default_value_t = 15
+    )]
+    lease_duration_seconds: u64,
+
+    #[arg(long, env = "MIDGARD_VALKEY_LEASE_RENEW_SECONDS", default_value_t = 5)]
+    lease_renew_seconds: u64,
+
+    #[arg(long, env = "MIDGARD_VALKEY_LEASE_RETRY_SECONDS", default_value_t = 5)]
+    lease_retry_seconds: u64,
+
+    #[arg(long, env = "MIDGARD_OPERATOR_HEARTBEAT_SECONDS", default_value_t = 10)]
+    heartbeat_seconds: u64,
+
+    #[arg(long, env = "MIDGARD_VALKEY_HEALTH_PROBE_BIND_ADDRESS")]
+    health_probe_bind_address: Option<String>,
+
+    #[arg(long, env = "MIDGARD_VALKEY_METRICS_BIND_ADDRESS")]
+    metrics_bind_address: Option<String>,
+}
+
 pub async fn run() -> Result<()> {
     let cli = Cli::parse();
     run_cli(cli).await
@@ -154,7 +227,35 @@ async fn run_cli(cli: Cli) -> Result<()> {
             run_migration(cli.config.as_deref(), cli.project_root.as_deref(), command).await
         }
         Command::Auth { command } => run_auth(cli.config.as_deref(), command).await,
+        Command::Operator { command } => match *command {
+            OperatorCommand::Valkey(args) => run_valkey_operator(args).await,
+        },
     }
+}
+
+async fn run_valkey_operator(args: ValkeyOperatorArgs) -> Result<()> {
+    init_tracing();
+    let config = midgard_valkey_operator::ValkeyOperatorConfig {
+        server_endpoint: args.server_endpoint,
+        workspace_id: args.workspace_id,
+        registration_token: args.registration_token,
+        operator_id: args.operator_id,
+        watch_namespaces: args.watch_namespace,
+        tls_ca_path: args.tls_ca_path,
+        allow_insecure_without_tls: args.allow_insecure_without_tls,
+        lease: midgard_valkey_operator::lease::LeaseConfig {
+            namespace: args.lock_namespace,
+            name: args.lock_name,
+            lease_duration: Duration::from_secs(args.lease_duration_seconds),
+            renew_interval: Duration::from_secs(args.lease_renew_seconds),
+            retry_interval: Duration::from_secs(args.lease_retry_seconds),
+        },
+        heartbeat_interval: Duration::from_secs(args.heartbeat_seconds),
+        health_probe_bind_address: args.health_probe_bind_address,
+        metrics_bind_address: args.metrics_bind_address,
+    };
+    midgard_valkey_operator::run(config).await?;
+    Ok(())
 }
 
 async fn run_server(config_path: Option<&Path>) -> Result<()> {
@@ -429,6 +530,45 @@ mod tests {
         let contents = fs::read_to_string(path).unwrap();
         assert!(contents.contains("[database]"));
         assert!(contents.contains("url = \"\""));
+    }
+
+    #[test]
+    fn operator_valkey_command_parses_startup_arguments() {
+        let cli = Cli::try_parse_from([
+            "midgard",
+            "operator",
+            "valkey",
+            "--server-endpoint",
+            "http://127.0.0.1:8081",
+            "--workspace-id",
+            "11111111-1111-1111-1111-111111111111",
+            "--registration-token",
+            "secret",
+            "--allow-insecure-without-tls",
+            "--watch-namespace",
+            "data,cache",
+            "--health-probe-bind-address",
+            ":8081",
+        ])
+        .unwrap();
+
+        let Some(Command::Operator { command }) = cli.command else {
+            panic!("expected valkey operator command");
+        };
+        let OperatorCommand::Valkey(args) = *command;
+        assert_eq!(args.server_endpoint, "http://127.0.0.1:8081");
+        assert_eq!(args.workspace_id, "11111111-1111-1111-1111-111111111111");
+        assert_eq!(args.registration_token, "secret");
+        assert!(args.allow_insecure_without_tls);
+        assert_eq!(args.watch_namespace, vec!["data", "cache"]);
+        assert_eq!(args.health_probe_bind_address.as_deref(), Some(":8081"));
+    }
+
+    #[test]
+    fn old_manager_startup_command_is_not_available() {
+        let err = Cli::try_parse_from(["midgard", "manager"]).unwrap_err();
+
+        assert!(err.to_string().contains("unrecognized subcommand"));
     }
 
     #[tokio::test]

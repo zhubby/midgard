@@ -1,0 +1,3 @@
+resources:
+- v1alpha1_valkeycluster.yaml
+- v1alpha1_valkeycluster-persistent.yaml

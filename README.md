@@ -24,8 +24,11 @@ midgard-tools               Tool trait, registry, and execution results
 midgard-controller          Middleware controller plugin contracts
 midgard-k8s                 Kubernetes operations abstraction
 midgard-plugin-example      Example middleware plugin
+midgard-protocol            gRPC contracts for server/operator control
 midgard-server              Axum HTTP API library
 midgard-cli                 Clap CLI entrypoint and migration wrapper
+operators/midgard-valkey-operator
+                            Midgard-native Valkey Kubernetes operator
 midgard-web/                 Bun + Next.js UI
 midgard-storage/Toasty.toml Toasty migration config
 midgard-storage/toasty/     Toasty migration history, migrations, and snapshots
@@ -37,6 +40,7 @@ midgard-storage/toasty/     Toasty migration history, migrations, and snapshots
 cargo check --workspace
 cargo test --workspace
 cargo run -p midgard-cli -- server
+cargo run -p midgard-cli -- operator valkey --workspace-id <uuid> --registration-token <token>
 cargo run -p midgard-cli -- migrate apply
 ```
 
