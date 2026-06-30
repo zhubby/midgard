@@ -1,19 +1,17 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use kube::api::{Api, DeleteParams, ListParams};
 use kube::{Client, ResourceExt};
+use midgard_operator::control::{capability_message, heartbeat_message, registration_message};
+use midgard_operator::traits::OperatorResourceAdapter;
 use midgard_protocol::operator::{
-    CapabilityReport, InventorySnapshot, MiddlewareResource, MiddlewareStatus, OperationResult,
-    OperationStatus, OperatorCapability, OperatorHeartbeat, OperatorRegistration, OperatorToServer,
-    ServerAck, ServerCommand, ServerToOperator, operator_control_client::OperatorControlClient,
-    operator_to_server, server_to_operator,
+    InventorySnapshot, MiddlewareResource, MiddlewareStatus, OperationResult, OperationStatus,
+    OperatorToServer, ServerAck, ServerCommand, ServerToOperator,
+    operator_control_client::OperatorControlClient, operator_to_server, server_to_operator,
 };
-use midgard_protocol::{
-    CommandType, DesiredState, OPERATOR_PROTOCOL_VERSION, json_to_struct, struct_to_json,
-};
+use midgard_protocol::{CommandType, DesiredState, json_to_struct, struct_to_json};
 use tokio::sync::mpsc;
 use tokio::time::sleep;
 use tokio_stream::wrappers::ReceiverStream;
@@ -483,74 +481,26 @@ fn defaulted_namespace(resource: &MiddlewareResource) -> String {
     }
 }
 
-fn registration_message(config: &ValkeyOperatorConfig) -> OperatorToServer {
-    OperatorToServer {
-        request_id: Uuid::new_v4().to_string(),
-        payload: Some(operator_to_server::Payload::Registration(
-            OperatorRegistration {
-                protocol_version: OPERATOR_PROTOCOL_VERSION,
-                operator_id: config.operator_id(),
-                workspace_id: config.workspace_id.clone(),
-                middleware_kind: VALKEY_MIDDLEWARE_KIND.to_string(),
-                display_name: "Midgard Valkey Operator".to_string(),
-                supported_operations: vec![
-                    "create".to_string(),
-                    "update".to_string(),
-                    "delete".to_string(),
-                    "query".to_string(),
-                    "refresh".to_string(),
-                    "reconcile".to_string(),
-                ],
-            },
-        )),
-    }
-}
+pub struct ValkeyResourceAdapter;
 
-fn capability_message(config: &ValkeyOperatorConfig) -> OperatorToServer {
-    OperatorToServer {
-        request_id: Uuid::new_v4().to_string(),
-        payload: Some(operator_to_server::Payload::CapabilityReport(
-            CapabilityReport {
-                operator_id: config.operator_id(),
-                capabilities: vec![
-                    OperatorCapability {
-                        id: "valkey.query".to_string(),
-                        name: "Query Valkey clusters".to_string(),
-                        risk_level: "low".to_string(),
-                    },
-                    OperatorCapability {
-                        id: "valkey.reconcile".to_string(),
-                        name: "Reconcile Valkey desired state".to_string(),
-                        risk_level: "medium".to_string(),
-                    },
-                    OperatorCapability {
-                        id: "valkey.create".to_string(),
-                        name: "Create Valkey clusters".to_string(),
-                        risk_level: "high".to_string(),
-                    },
-                    OperatorCapability {
-                        id: "valkey.update".to_string(),
-                        name: "Update Valkey clusters".to_string(),
-                        risk_level: "high".to_string(),
-                    },
-                    OperatorCapability {
-                        id: "valkey.delete".to_string(),
-                        name: "Delete Valkey clusters".to_string(),
-                        risk_level: "critical".to_string(),
-                    },
-                ],
-            },
-        )),
-    }
-}
+impl OperatorResourceAdapter for ValkeyResourceAdapter {
+    type Resource = ValkeyCluster;
+    type Error = Error;
 
-fn heartbeat_message(config: &ValkeyOperatorConfig) -> OperatorToServer {
-    OperatorToServer {
-        request_id: Uuid::new_v4().to_string(),
-        payload: Some(operator_to_server::Payload::Heartbeat(OperatorHeartbeat {
-            operator_id: config.operator_id(),
-            observed_at_unix_ms: unix_time_millis(),
-        })),
+    fn middleware_kind(&self) -> &str {
+        VALKEY_MIDDLEWARE_KIND
+    }
+
+    fn resource_from_middleware(&self, resource: MiddlewareResource) -> Result<Self::Resource> {
+        middleware_resource_to_cluster(resource)
+    }
+
+    fn middleware_from_resource(
+        &self,
+        resource: &Self::Resource,
+        fallback: Option<&MiddlewareResource>,
+    ) -> Result<MiddlewareResource> {
+        cluster_to_middleware_resource(resource, fallback)
     }
 }
 
@@ -598,13 +548,6 @@ async fn send_operation_result(
         })
         .await
         .map_err(|_| Error::InvalidState("operator result stream closed".to_string()))
-}
-
-fn unix_time_millis() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or(Duration::ZERO)
-        .as_millis() as i64
 }
 
 #[cfg(test)]

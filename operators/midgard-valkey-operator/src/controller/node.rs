@@ -4,9 +4,9 @@ use std::time::Duration;
 use k8s_openapi::api::apps::v1::{Deployment, StatefulSet};
 use k8s_openapi::api::core::v1::{PersistentVolumeClaim, Pod};
 use kube::ResourceExt;
-use kube::api::{Api, ListParams, Patch, PatchParams};
+use kube::api::{Api, ListParams};
 use kube::runtime::controller::Action;
-use serde_json::json;
+use midgard_operator::finalizers::{add_finalizer, patch_finalizers, remove_finalizer};
 use tracing::{debug, warn};
 
 use crate::api::{
@@ -171,39 +171,6 @@ async fn reconcile_deletion(client: kube::Client, node: &ValkeyNode) -> Result<A
     )
     .await?;
     Ok(Action::await_change())
-}
-
-async fn patch_finalizers(
-    client: kube::Client,
-    node: &ValkeyNode,
-    finalizers: Vec<String>,
-) -> Result<()> {
-    let namespace = node.namespace().unwrap_or_default();
-    let api = Api::<ValkeyNode>::namespaced(client, &namespace);
-    let patch = json!({ "metadata": { "finalizers": finalizers } });
-    api.patch(
-        &node.name_any(),
-        &PatchParams::default(),
-        &Patch::Merge(&patch),
-    )
-    .await?;
-    Ok(())
-}
-
-fn add_finalizer(node: &ValkeyNode, finalizer: &str) -> Vec<String> {
-    let mut finalizers = node.finalizers().to_vec();
-    if !finalizers.iter().any(|item| item == finalizer) {
-        finalizers.push(finalizer.to_string());
-    }
-    finalizers
-}
-
-fn remove_finalizer(node: &ValkeyNode, finalizer: &str) -> Vec<String> {
-    node.finalizers()
-        .iter()
-        .filter(|item| *item != finalizer)
-        .cloned()
-        .collect()
 }
 
 async fn compute_status(client: kube::Client, node: &ValkeyNode) -> Result<ValkeyNodeStatus> {

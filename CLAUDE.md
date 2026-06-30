@@ -10,7 +10,7 @@ This repository is a Rust workspace with a Bun + Next.js frontend. The current c
 - `midgard-storage`: Toasty/PostgreSQL storage boundary for agent sessions and messages, plus the in-memory session store used by tests.
 - `midgard-tools`: tool trait, tool definitions, registry, execution result types, and risk metadata exposure.
 - `midgard-controller`: middleware controller and plugin contracts.
-- `midgard-k8s`: Kubernetes client abstraction, workload/pod/event summaries, and mock client.
+- `midgard-operator`: Kubernetes operator contracts, reusable reconcile helpers, lease handling, probes, and Midgard control-plane message helpers.
 - `midgard-docker`: Docker runtime client abstraction, controller plugin, and workspace-scoped Docker management tools.
 - `midgard-server`: Axum HTTP API library and app state wiring.
 - `midgard-cli`: Clap-based project entrypoint, config init command, server startup, and Toasty migration wrapper.
@@ -26,7 +26,7 @@ Midgard is an agent-native operations platform. Preserve these boundaries:
 - `RiskLevel::High` and `RiskLevel::Critical` actions must remain approval-gated through `requires_approval`.
 - Agent completion should remain explicit through completion status/tooling rather than inferred from free-form text alone.
 - Middleware plugins should register capabilities and tools through `MiddlewarePlugin` and `MiddlewareController`; do not special-case a plugin in the agent loop.
-- Kubernetes operations should go through `KubernetesClient` abstractions. Do not shell out to `kubectl` from library code unless there is a deliberate design change.
+- Kubernetes operator work should go through `midgard-operator` traits and helpers where they apply. Do not shell out to `kubectl` from library code unless there is a deliberate design change.
 
 ## Build, Test, and Development Commands
 
@@ -56,7 +56,7 @@ Frontend commands:
 - Use `rustfmt` output: 4-space indentation, formatter-managed trailing commas, and idiomatic import grouping.
 - Prefer concrete `struct` and `enum` types over `serde_json::Value` whenever the shape is known. `Value` is appropriate at tool argument and JSON-schema boundaries.
 - Match on types and enums rather than strings. Convert to strings only at serialization, display, or external protocol boundaries.
-- Use traits for behavior boundaries already present in the codebase: `Tool`, `MiddlewareController`, `MiddlewarePlugin`, and `KubernetesClient`.
+- Use traits for behavior boundaries already present in the codebase: `Tool`, `MiddlewareController`, `MiddlewarePlugin`, `OperatorDefinition`, and `OperatorResourceAdapter`.
 - Prefer `MidgardResult<T>` and `MidgardError` for shared Midgard errors. Use crate-specific `thiserror` enums when a domain needs more precise variants.
 - For new production paths, avoid `.unwrap()` and `.expect()`. Prefer `?`, `ok_or_else`, guarded fallbacks, or explicit error responses. Test code may unwrap where failure should fail the test.
 - Never hold a `MutexGuard` or other blocking guard across an `.await`.

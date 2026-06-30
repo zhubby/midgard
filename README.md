@@ -10,7 +10,7 @@ Midgard is an agent-native middleware operations platform for Docker and Kuberne
 - Toasty-backed storage layer targeting PostgreSQL.
 - Pluggable middleware controllers that register capabilities as tools.
 - Persistent approval audit history for high-risk and critical tool calls.
-- Kubernetes abstraction layer for cluster, namespace, workload, pod, and event operations.
+- Operator abstraction layer for Midgard-native Kubernetes operators.
 - Docker runtime tools that are only visible to Docker-configured workspaces.
 - Bun + TypeScript + Next.js frontend in `midgard-web`.
 
@@ -23,7 +23,7 @@ midgard-agent               Agent loop and OpenAI-compatible provider
 midgard-storage             Toasty/PostgreSQL storage for agent sessions
 midgard-tools               Tool trait, registry, and execution results
 midgard-controller          Middleware controller plugin contracts
-midgard-k8s                 Kubernetes operations abstraction
+midgard-operator            Kubernetes operator contracts and shared helpers
 midgard-docker              Docker runtime tools and plugin
 midgard-protocol            gRPC contracts for server/operator control
 midgard-server              Axum HTTP API library

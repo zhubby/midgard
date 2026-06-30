@@ -1,30 +1,21 @@
 [package]
-name = "midgard-valkey-operator"
+name = "midgard-operator"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 version.workspace = true
-publish = false
 
 [dependencies]
-anyhow.workspace = true
-base64.workspace = true
-futures-util.workspace = true
-hex.workspace = true
+axum.workspace = true
 k8s-openapi.workspace = true
 kube.workspace = true
 midgard-core.workspace = true
-midgard-operator.workspace = true
 midgard-protocol.workspace = true
-rand.workspace = true
-redis.workspace = true
-schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-sha2.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
-tokio-stream.workspace = true
-tonic.workspace = true
 tracing.workspace = true
 uuid.workspace = true
+
+[dev-dependencies]

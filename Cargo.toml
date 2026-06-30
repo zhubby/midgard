@@ -5,7 +5,7 @@ members = [
     "midgard-config",
     "midgard-controller",
     "midgard-core",
-    "midgard-k8s",
+    "midgard-operator",
     "midgard-docker",
     "midgard-protocol",
     "midgard-server",
@@ -42,6 +42,7 @@ midgard-config = { path = "midgard-config" }
 midgard-controller = { path = "midgard-controller" }
 midgard-core = { path = "midgard-core" }
 midgard-docker = { path = "midgard-docker" }
+midgard-operator = { path = "midgard-operator" }
 midgard-protocol = { path = "midgard-protocol" }
 midgard-server = { path = "midgard-server" }
 midgard-tools = { path = "midgard-tools" }

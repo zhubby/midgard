@@ -2027,13 +2027,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "midgard-k8s"
+name = "midgard-operator"
 version = "0.1.0"
 dependencies = [
- "async-trait",
+ "axum",
+ "k8s-openapi",
+ "kube",
  "midgard-core",
+ "midgard-protocol",
  "serde",
+ "serde_json",
+ "thiserror",
  "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -2126,12 +2133,13 @@ name = "midgard-valkey-operator"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "axum",
  "base64",
  "futures-util",
  "hex",
  "k8s-openapi",
  "kube",
+ "midgard-core",
+ "midgard-operator",
  "midgard-protocol",
  "rand 0.8.6",
  "redis",

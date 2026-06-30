@@ -14,6 +14,9 @@ pub enum Error {
     #[error("serialization error: {0}")]
     SerdeJson(#[from] serde_json::Error),
 
+    #[error("operator error: {0}")]
+    Operator(#[from] midgard_operator::OperatorError),
+
     #[error("invalid object state: {0}")]
     InvalidState(String),
 

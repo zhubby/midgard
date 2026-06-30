@@ -1,18 +1,18 @@
-use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::Router;
-use axum::routing::get;
 use futures_util::StreamExt;
 use k8s_openapi::api::apps::v1::{Deployment, StatefulSet};
 use k8s_openapi::api::core::v1::{ConfigMap, PersistentVolumeClaim, Secret, Service};
 use k8s_openapi::api::policy::v1::PodDisruptionBudget;
 use kube::Client;
 use kube::api::Api;
-use kube::core::NamespaceResourceScope;
 use kube::runtime::{Controller, watcher};
+use midgard_core::{CapabilityDescriptor, RiskLevel};
+use midgard_operator::controller::root_api;
+use midgard_operator::probe::start_probe_servers;
+use midgard_operator::traits::OperatorDefinition;
 use tokio::time::sleep;
 use uuid::Uuid;
 
@@ -20,7 +20,7 @@ use crate::api::{ValkeyCluster, ValkeyNode};
 use crate::controller::{Context, cluster, node};
 use crate::error::{Error, Result};
 use crate::lease::{LeaseConfig, LeaseGuard};
-use crate::protocol;
+use crate::protocol::{self, VALKEY_MIDDLEWARE_KIND};
 
 #[derive(Clone, Debug)]
 pub struct ValkeyOperatorConfig {
@@ -71,6 +71,57 @@ impl ValkeyOperatorConfig {
     }
 }
 
+impl OperatorDefinition for ValkeyOperatorConfig {
+    fn operator_id(&self) -> String {
+        ValkeyOperatorConfig::operator_id(self)
+    }
+
+    fn workspace_id(&self) -> &str {
+        &self.workspace_id
+    }
+
+    fn middleware_kind(&self) -> &str {
+        VALKEY_MIDDLEWARE_KIND
+    }
+
+    fn display_name(&self) -> &str {
+        "Midgard Valkey Operator"
+    }
+
+    fn supported_operations(&self) -> Vec<String> {
+        vec![
+            "create".to_string(),
+            "update".to_string(),
+            "delete".to_string(),
+            "query".to_string(),
+            "refresh".to_string(),
+            "reconcile".to_string(),
+        ]
+    }
+
+    fn capabilities(&self) -> Vec<CapabilityDescriptor> {
+        vec![
+            CapabilityDescriptor::new("valkey.query", "Query Valkey clusters", RiskLevel::Low),
+            CapabilityDescriptor::new(
+                "valkey.reconcile",
+                "Reconcile Valkey desired state",
+                RiskLevel::Medium,
+            ),
+            CapabilityDescriptor::new("valkey.create", "Create Valkey clusters", RiskLevel::High),
+            CapabilityDescriptor::new("valkey.update", "Update Valkey clusters", RiskLevel::High),
+            CapabilityDescriptor::new(
+                "valkey.delete",
+                "Delete Valkey clusters",
+                RiskLevel::Critical,
+            ),
+        ]
+    }
+
+    fn heartbeat_interval(&self) -> Duration {
+        self.heartbeat_interval
+    }
+}
+
 impl Default for ValkeyOperatorConfig {
     fn default() -> Self {
         Self {
@@ -81,7 +132,7 @@ impl Default for ValkeyOperatorConfig {
             watch_namespaces: Vec::new(),
             tls_ca_path: None,
             allow_insecure_without_tls: false,
-            lease: LeaseConfig::default(),
+            lease: crate::lease::default_config(),
             heartbeat_interval: Duration::from_secs(10),
             health_probe_bind_address: None,
             metrics_bind_address: None,
@@ -123,7 +174,7 @@ async fn acquire_lock_with_retry(
     loop {
         match LeaseGuard::acquire(client.clone(), lease.clone(), holder_identity.clone()).await {
             Ok(guard) => return Ok(guard),
-            Err(Error::LeaseHeld(holder)) => {
+            Err(midgard_operator::OperatorError::LeaseHeld(holder)) => {
                 tracing::info!(
                     holder = %holder,
                     lease_namespace = %lease.namespace,
@@ -132,7 +183,7 @@ async fn acquire_lock_with_retry(
                 );
                 sleep(lease.retry_interval).await;
             }
-            Err(err) => return Err(err),
+            Err(err) => return Err(err.into()),
         }
     }
 }
@@ -256,56 +307,17 @@ async fn run_controllers(client: Client, watch_namespaces: Vec<String>) -> Resul
     Ok(())
 }
 
-fn root_api<K>(client: Client, namespaces: &[String]) -> Api<K>
-where
-    K: kube::Resource<DynamicType = (), Scope = NamespaceResourceScope>,
-{
-    if namespaces.len() == 1 {
-        Api::namespaced(client, &namespaces[0])
-    } else {
-        Api::all(client)
-    }
-}
-
 fn start_internal_servers(config: &ValkeyOperatorConfig) -> Result<()> {
-    if let Some(addr) = optional_probe_addr(config.health_probe_bind_address.as_deref())? {
-        tokio::spawn(async move {
-            if let Err(err) = serve_health(addr).await {
-                tracing::error!(%err, "valkey operator health server exited");
-            }
-        });
-    }
-
-    if let Some(addr) = optional_probe_addr(config.metrics_bind_address.as_deref())? {
-        tokio::spawn(async move {
-            if let Err(err) = serve_metrics(addr).await {
-                tracing::error!(%err, "valkey operator metrics server exited");
-            }
-        });
-    }
-
+    start_probe_servers(
+        config.health_probe_bind_address.as_deref(),
+        config.metrics_bind_address.as_deref(),
+        Some(metrics_body()),
+        "valkey operator",
+    )?;
     Ok(())
 }
 
-async fn serve_health(addr: SocketAddr) -> Result<()> {
-    let app = Router::new()
-        .route("/healthz", get(|| async { "ok" }))
-        .route("/readyz", get(|| async { "ok" }));
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    tracing::info!(%addr, "valkey operator health server listening");
-    axum::serve(listener, app).await?;
-    Ok(())
-}
-
-async fn serve_metrics(addr: SocketAddr) -> Result<()> {
-    let app = Router::new().route("/metrics", get(metrics_body));
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    tracing::info!(%addr, "valkey operator metrics server listening");
-    axum::serve(listener, app).await?;
-    Ok(())
-}
-
-async fn metrics_body() -> String {
+fn metrics_body() -> String {
     concat!(
         "# HELP midgard_valkey_operator_build_info Build information for the Midgard Valkey operator.\n",
         "# TYPE midgard_valkey_operator_build_info gauge\n",
@@ -316,30 +328,14 @@ async fn metrics_body() -> String {
     .to_string()
 }
 
-fn optional_probe_addr(value: Option<&str>) -> Result<Option<SocketAddr>> {
-    let Some(value) = value
-        .map(str::trim)
-        .filter(|value| !value.is_empty() && *value != "0")
-    else {
-        return Ok(None);
-    };
-    let normalized = if let Some(port) = value.strip_prefix(':') {
-        format!("0.0.0.0:{port}")
-    } else {
-        value.to_string()
-    };
-    normalized
-        .parse()
-        .map(Some)
-        .map_err(|err| Error::InvalidConfig(format!("invalid bind address {value}: {err}")))
-}
-
 async fn shutdown_signal() {
     let _ = tokio::signal::ctrl_c().await;
 }
 
 #[cfg(test)]
 mod tests {
+    use midgard_operator::traits::OperatorDefinition;
+
     use super::*;
 
     #[test]
@@ -381,9 +377,45 @@ mod tests {
     }
 
     #[test]
-    fn probe_address_accepts_colon_port() {
-        let addr = optional_probe_addr(Some(":8081")).unwrap().unwrap();
+    fn operator_definition_exposes_existing_valkey_capabilities() {
+        let config = ValkeyOperatorConfig {
+            workspace_id: "11111111-1111-1111-1111-111111111111".to_string(),
+            ..ValkeyOperatorConfig::default()
+        };
 
-        assert_eq!(addr, "0.0.0.0:8081".parse::<SocketAddr>().unwrap());
+        assert_eq!(config.middleware_kind(), VALKEY_MIDDLEWARE_KIND);
+        assert_eq!(config.display_name(), "Midgard Valkey Operator");
+        assert_eq!(
+            config.supported_operations(),
+            vec![
+                "create".to_string(),
+                "update".to_string(),
+                "delete".to_string(),
+                "query".to_string(),
+                "refresh".to_string(),
+                "reconcile".to_string(),
+            ]
+        );
+        let capabilities = config.capabilities();
+        assert_eq!(capabilities[0].id, "valkey.query");
+        assert_eq!(capabilities[0].name, "Query Valkey clusters");
+        assert_eq!(capabilities[0].risk_level, RiskLevel::Low);
+        assert_eq!(capabilities[1].id, "valkey.reconcile");
+        assert_eq!(capabilities[1].risk_level, RiskLevel::Medium);
+        assert_eq!(capabilities[2].id, "valkey.create");
+        assert_eq!(capabilities[2].risk_level, RiskLevel::High);
+        assert_eq!(capabilities[3].id, "valkey.update");
+        assert_eq!(capabilities[3].risk_level, RiskLevel::High);
+        assert_eq!(capabilities[4].id, "valkey.delete");
+        assert_eq!(capabilities[4].risk_level, RiskLevel::Critical);
+    }
+
+    #[test]
+    fn probe_address_accepts_colon_port() {
+        let addr = midgard_operator::probe::optional_probe_addr(Some(":8081"))
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(addr.to_string(), "0.0.0.0:8081");
     }
 }
