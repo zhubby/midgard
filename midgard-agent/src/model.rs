@@ -230,6 +230,9 @@ fn utc_now_rfc3339() -> String {
 pub struct AgentSession {
     #[ts(type = "string")]
     pub id: Uuid,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(type = "string | null")]
+    pub workspace_id: Option<Uuid>,
     pub messages: Vec<AgentMessage>,
     pub iteration_count: usize,
     #[serde(default)]
@@ -244,6 +247,7 @@ impl AgentSession {
     pub fn new(goal: impl Into<String>) -> Self {
         Self {
             id: Uuid::new_v4(),
+            workspace_id: None,
             messages: vec![AgentMessage::user(goal)],
             iteration_count: 0,
             status: AgentRunStatus::Responded,

@@ -12,15 +12,18 @@ pub use auth::{
 };
 pub use memory::{MemoryAgentSessionStore, MemoryAuthStore, MemoryOrganizationStore};
 pub use org::{
+    DockerRuntimeConfigView, KubernetesRuntimeConfigView, MiddlewareDesiredState,
+    MiddlewareInstance, MiddlewareInstanceStatus, MiddlewareInstanceUpdate, NewMiddlewareInstance,
     NewOrganization, NewOrganizationMembership, NewWorkspace, Organization, OrganizationContext,
     OrganizationMembership, OrganizationMembershipUpdate, OrganizationRole, Workspace,
-    WorkspaceUpdate,
+    WorkspaceRuntimeConfigRecord, WorkspaceRuntimeConfigStatus, WorkspaceRuntimeConfigView,
+    WorkspaceRuntimeMode, WorkspaceUpdate,
 };
 pub use postgres::{
     connect_database, storage_models, PostgresAgentSessionStore, StoredAgentApprovalRecord,
     StoredAgentMessage, StoredAgentSession, StoredAuthAuditEvent, StoredAuthSession,
-    StoredAuthUser, StoredOrganization, StoredOrganizationMembership, StoredRbacRole,
-    StoredRbacRolePermission, StoredWorkspace,
+    StoredAuthUser, StoredMiddlewareInstance, StoredOrganization, StoredOrganizationMembership,
+    StoredRbacRole, StoredRbacRolePermission, StoredWorkspace,
 };
 pub use rbac::{
     builtin_organization_roles, builtin_system_roles, legacy_organization_role_builtin_key,

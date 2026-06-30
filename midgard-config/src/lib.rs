@@ -11,9 +11,13 @@ const CONFIG_FILE: &str = "config.toml";
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct MidgardConfig {
     pub server: ServerConfig,
+    #[serde(default)]
+    pub operator_control: OperatorControlConfig,
     pub database: DatabaseConfig,
     #[serde(default)]
     pub auth: AuthConfig,
+    #[serde(default)]
+    pub secrets: SecretsConfig,
     pub llm: LlmFileConfig,
 }
 
@@ -23,8 +27,10 @@ impl MidgardConfig {
             server: ServerConfig {
                 bind_address: "0.0.0.0:8080".to_string(),
             },
+            operator_control: OperatorControlConfig::default(),
             database: DatabaseConfig { url: String::new() },
             auth: AuthConfig::default(),
+            secrets: SecretsConfig::default(),
             llm: LlmFileConfig {
                 base_url: "https://api.openai.com/v1".to_string(),
                 model: "gpt-4o-mini".to_string(),
@@ -63,6 +69,67 @@ pub struct ServerConfig {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct OperatorControlConfig {
+    pub enabled: bool,
+    pub bind_address: String,
+    pub tls_cert_path: String,
+    pub tls_key_path: String,
+    pub allow_insecure_without_tls: bool,
+    pub registration_tokens: Vec<OperatorRegistrationTokenConfig>,
+}
+
+impl Default for OperatorControlConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bind_address: "0.0.0.0:8081".to_string(),
+            tls_cert_path: String::new(),
+            tls_key_path: String::new(),
+            allow_insecure_without_tls: false,
+            registration_tokens: Vec::new(),
+        }
+    }
+}
+
+impl OperatorControlConfig {
+    pub fn validate_for_startup(&self) -> MidgardResult<()> {
+        if !self.enabled {
+            return Ok(());
+        }
+        if self.registration_tokens.is_empty() {
+            return Err(MidgardError::Configuration(
+                "operator_control.registration_tokens must contain at least one workspace token when operator control is enabled".to_string(),
+            ));
+        }
+        if self
+            .registration_tokens
+            .iter()
+            .any(|token| token.workspace_id.trim().is_empty() || token.token.trim().is_empty())
+        {
+            return Err(MidgardError::Configuration(
+                "operator_control.registration_tokens entries require workspace_id and token"
+                    .to_string(),
+            ));
+        }
+        if !self.allow_insecure_without_tls
+            && (self.tls_cert_path.trim().is_empty() || self.tls_key_path.trim().is_empty())
+        {
+            return Err(MidgardError::Configuration(
+                "operator_control.tls_cert_path and tls_key_path are required unless allow_insecure_without_tls is true".to_string(),
+            ));
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct OperatorRegistrationTokenConfig {
+    pub workspace_id: String,
+    pub token: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct DatabaseConfig {
     pub url: String,
 }
@@ -84,6 +151,11 @@ impl Default for AuthConfig {
             cookie_same_site: "lax".to_string(),
         }
     }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SecretsConfig {
+    pub workspace_credentials_key: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -207,7 +279,15 @@ mod tests {
         assert_eq!(loaded.path, path);
         assert_eq!(loaded.config.database.url, "");
         assert_eq!(loaded.config.auth.cookie_name, "midgard_session");
+        assert_eq!(loaded.config.secrets.workspace_credentials_key, "");
         assert_eq!(loaded.config.server.bind_address, "0.0.0.0:8080");
+        assert!(!loaded.config.operator_control.enabled);
+        assert_eq!(loaded.config.operator_control.bind_address, "0.0.0.0:8081");
+        assert!(loaded
+            .config
+            .operator_control
+            .registration_tokens
+            .is_empty());
         assert!(loaded.path.exists());
     }
 
@@ -272,5 +352,26 @@ mod tests {
         assert_eq!(config.llm_config().base_url, "https://api.openai.com/v1");
         assert_eq!(config.llm_config().model, "gpt-4o-mini");
         assert_eq!(config.llm_config().api_mode, LlmApiMode::ChatCompletions);
+    }
+
+    #[test]
+    fn enabled_operator_control_requires_tokens_and_tls_by_default() {
+        let mut config = OperatorControlConfig {
+            enabled: true,
+            ..OperatorControlConfig::default()
+        };
+
+        assert!(config.validate_for_startup().is_err());
+
+        config
+            .registration_tokens
+            .push(OperatorRegistrationTokenConfig {
+                workspace_id: "workspace-id".to_string(),
+                token: "secret".to_string(),
+            });
+        assert!(config.validate_for_startup().is_err());
+
+        config.allow_insecure_without_tls = true;
+        assert!(config.validate_for_startup().is_ok());
     }
 }

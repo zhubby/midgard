@@ -19,6 +19,7 @@ midgard-config.workspace = true
 midgard-server.workspace = true
 midgard-storage.workspace = true
 tokio.workspace = true
+tonic.workspace = true
 toasty-cli.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

@@ -1,19 +1,27 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use midgard_agent::OpenAiCompatibleProvider;
-use midgard_config::{default_config_path, ensure_default_config, load_or_create};
-use midgard_server::{app_with_provider_and_auth, AuthSettings};
+use midgard_config::{
+    default_config_path, ensure_default_config, load_or_create, OperatorControlConfig,
+};
+use midgard_server::{
+    app_state_with_provider_auth_orgs_credentials_and_operator_registry, app_with_state,
+    AuthSettings, OperatorControlService, OperatorRegistrationToken, OperatorRegistry,
+    WorkspaceCredentialSettings,
+};
 use midgard_storage::{
     connect_database, hash_password, normalize_email, AuthStore, NewAuthAuditEvent, NewUser,
     PostgresAgentSessionStore, UserRole,
 };
 use std::{
     ffi::OsString,
+    fs,
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::Arc,
 };
 use toasty_cli::{Config as ToastyConfig, ToastyCli};
+use tonic::transport::{Identity, Server as GrpcServer, ServerTlsConfig};
 
 const STORAGE_TOASTY_CONFIG: &str = "midgard-storage/Toasty.toml";
 
@@ -153,6 +161,7 @@ async fn run_server(config_path: Option<&Path>) -> Result<()> {
     init_tracing();
     let loaded = load_or_create(config_path)?;
     let database_url = loaded.config.require_database_url()?;
+    loaded.config.operator_control.validate_for_startup()?;
     let address: SocketAddr = loaded
         .config
         .server
@@ -176,12 +185,78 @@ async fn run_server(config_path: Option<&Path>) -> Result<()> {
         .with_context(|| format!("bind Midgard server to {address}"))?;
 
     tracing::info!(%address, config = %loaded.path.display(), "midgard server listening");
-    axum::serve(
-        listener,
-        app_with_provider_and_auth(store.clone(), store, Arc::new(provider), auth_settings),
+    let workspace_credentials = WorkspaceCredentialSettings::new(Some(
+        loaded.config.secrets.workspace_credentials_key.clone(),
+    ));
+    let operator_registry = operator_registry_from_config(&loaded.config.operator_control);
+    let app_state = app_state_with_provider_auth_orgs_credentials_and_operator_registry(
+        store.clone(),
+        store.clone(),
+        store,
+        Arc::new(provider),
+        auth_settings,
+        workspace_credentials,
+        operator_registry,
+    );
+    let http_server = axum::serve(listener, app_with_state(app_state.clone()));
+
+    if loaded.config.operator_control.enabled {
+        let operator_address: SocketAddr = loaded
+            .config
+            .operator_control
+            .bind_address
+            .parse()
+            .with_context(|| {
+                format!(
+                    "invalid operator_control.bind_address in {}",
+                    loaded.path.display()
+                )
+            })?;
+        tracing::info!(%operator_address, "midgard operator gRPC listening");
+        let operator_server = operator_grpc_server(&loaded.config.operator_control)?
+            .add_service(OperatorControlService::new(app_state).into_server())
+            .serve(operator_address);
+
+        tokio::select! {
+            result = http_server => result.context("serve Midgard API"),
+            result = operator_server => result.context("serve Midgard operator gRPC"),
+        }
+    } else {
+        http_server.await.context("serve Midgard API")
+    }
+}
+
+fn operator_registry_from_config(config: &OperatorControlConfig) -> OperatorRegistry {
+    OperatorRegistry::new(
+        config
+            .registration_tokens
+            .iter()
+            .map(|token| {
+                OperatorRegistrationToken::new(
+                    token.workspace_id.trim().to_string(),
+                    token.token.trim().to_string(),
+                )
+            })
+            .collect(),
     )
-    .await
-    .context("serve Midgard API")
+}
+
+fn operator_grpc_server(config: &OperatorControlConfig) -> Result<GrpcServer> {
+    let server = GrpcServer::builder();
+    if config.allow_insecure_without_tls {
+        tracing::warn!(
+            "operator gRPC is running without TLS because allow_insecure_without_tls is true"
+        );
+        return Ok(server);
+    }
+
+    let certificate = fs::read(&config.tls_cert_path)
+        .with_context(|| format!("read operator TLS certificate {}", config.tls_cert_path))?;
+    let private_key = fs::read(&config.tls_key_path)
+        .with_context(|| format!("read operator TLS key {}", config.tls_key_path))?;
+    Ok(server.tls_config(
+        ServerTlsConfig::new().identity(Identity::from_pem(certificate, private_key)),
+    )?)
 }
 
 async fn run_auth(config_path: Option<&Path>, command: AuthCommand) -> Result<()> {

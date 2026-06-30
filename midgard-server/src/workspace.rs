@@ -8,7 +8,10 @@ use midgard_agent::{
     AgentMessage, AgentRunEvent, AgentRunStatus, AgentSession, AgentToolCall, ApprovalRecord,
     PendingApproval,
 };
-use midgard_storage::{Organization, OrganizationMembership, PermissionKey, Workspace};
+use midgard_storage::{
+    MiddlewareInstance, Organization, OrganizationMembership, PermissionKey, Workspace,
+    WorkspaceRuntimeConfigView,
+};
 use midgard_tools::{ToolDefinition, ToolResult};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
@@ -24,12 +27,18 @@ const EVENT_BUFFER_SIZE: usize = 256;
 pub struct WorkspaceSnapshot {
     pub organization: Organization,
     pub workspace: Workspace,
+    pub runtime_config: WorkspaceRuntimeConfigView,
     pub current_membership: OrganizationMembership,
     pub current_permissions: Vec<PermissionKey>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<AgentSession>,
+    pub sessions: Vec<crate::AgentSessionSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(type = "string | null")]
+    pub active_session_id: Option<Uuid>,
     pub tools: Vec<ToolDefinition>,
     pub plugins: Vec<PluginResponse>,
+    pub middleware_instances: Vec<MiddlewareInstance>,
     pub middleware: MiddlewareDashboardState,
     pub approvals: Vec<ApprovalRecord>,
 }
@@ -177,6 +186,8 @@ pub enum WorkspaceEventType {
     ApprovalRequired,
     ApprovalDecided,
     MiddlewareSnapshot,
+    MiddlewareInstanceUpserted,
+    MiddlewareInstanceRemoved,
     MiddlewareWorkloadUpserted,
     MiddlewareWorkloadRemoved,
     MiddlewareMetricChanged,
@@ -202,6 +213,8 @@ impl WorkspaceEventType {
             WorkspaceEventType::ApprovalRequired => "approval_required",
             WorkspaceEventType::ApprovalDecided => "approval_decided",
             WorkspaceEventType::MiddlewareSnapshot => "middleware_snapshot",
+            WorkspaceEventType::MiddlewareInstanceUpserted => "middleware_instance_upserted",
+            WorkspaceEventType::MiddlewareInstanceRemoved => "middleware_instance_removed",
             WorkspaceEventType::MiddlewareWorkloadUpserted => "middleware_workload_upserted",
             WorkspaceEventType::MiddlewareWorkloadRemoved => "middleware_workload_removed",
             WorkspaceEventType::MiddlewareMetricChanged => "middleware_metric_changed",
@@ -267,6 +280,12 @@ pub enum WorkspaceEventPayload {
     MiddlewareSnapshot {
         state: MiddlewareDashboardState,
     },
+    MiddlewareInstanceUpserted {
+        instance: MiddlewareInstance,
+    },
+    MiddlewareInstanceRemoved {
+        id: String,
+    },
     MiddlewareWorkloadUpserted {
         workload: MiddlewareWorkload,
     },
@@ -318,6 +337,12 @@ impl WorkspaceEventPayload {
             WorkspaceEventPayload::ApprovalDecided { .. } => WorkspaceEventType::ApprovalDecided,
             WorkspaceEventPayload::MiddlewareSnapshot { .. } => {
                 WorkspaceEventType::MiddlewareSnapshot
+            }
+            WorkspaceEventPayload::MiddlewareInstanceUpserted { .. } => {
+                WorkspaceEventType::MiddlewareInstanceUpserted
+            }
+            WorkspaceEventPayload::MiddlewareInstanceRemoved { .. } => {
+                WorkspaceEventType::MiddlewareInstanceRemoved
             }
             WorkspaceEventPayload::MiddlewareWorkloadUpserted { .. } => {
                 WorkspaceEventType::MiddlewareWorkloadUpserted

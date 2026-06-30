@@ -1,0 +1,18 @@
+[package]
+name = "midgard-protocol"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[dependencies]
+midgard-storage.workspace = true
+prost.workspace = true
+prost-types.workspace = true
+serde_json.workspace = true
+tonic.workspace = true
+tonic-prost.workspace = true
+uuid.workspace = true
+
+[build-dependencies]
+tonic-prost-build.workspace = true

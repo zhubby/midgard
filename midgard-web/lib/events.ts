@@ -17,6 +17,8 @@ const workspaceEventTypes: WorkspaceEventType[] = [
   "approval_required",
   "approval_decided",
   "middleware_snapshot",
+  "middleware_instance_upserted",
+  "middleware_instance_removed",
   "middleware_workload_upserted",
   "middleware_workload_removed",
   "middleware_metric_changed",

@@ -25,7 +25,7 @@ export type ApprovalStatus = "pending" | "approved" | "rejected";
 
 export type ApprovalRecord = { id: string, session_id: string, tool_call: AgentToolCall, risk_level: RiskLevel, status: ApprovalStatus, requested_at: string, decided_at?: string | null, actor?: string | null, reason?: string | null, };
 
-export type AgentSession = { id: string, messages: Array<AgentMessage>, iteration_count: number, status: AgentRunStatus, pending_approval?: PendingApproval | null, last_error?: string | null, };
+export type AgentSession = { id: string, workspace_id?: string | null, messages: Array<AgentMessage>, iteration_count: number, status: AgentRunStatus, pending_approval?: PendingApproval | null, last_error?: string | null, };
 
 export type AgentRunEvent = { "type": "model_delta", content: string, } | { "type": "assistant_message", message: AgentMessage, } | { "type": "tool_call_requested", tool_call: AgentToolCall, } | { "type": "tool_result", tool_call_id: string, name: string, result: ToolResult, } | { "type": "approval_required", approval: PendingApproval, } | { "type": "completed", status: AgentRunStatus, output: string, } | { "type": "failed", error: string, };
 
@@ -57,15 +57,37 @@ export type Organization = { id: string, slug: string, name: string, created_by_
 
 export type OrganizationMembership = { id: string, organization_id: string, user_id: string, role: OrganizationRole, role_id: string, active: boolean, joined_at: string, created_at: string, updated_at: string, };
 
-export type Workspace = { id: string, organization_id: string, slug: string, name: string, archived_at?: string | null, created_at: string, updated_at: string, };
+export type WorkspaceRuntimeMode = "docker" | "kubernetes";
+
+export type WorkspaceRuntimeConfigStatus = "unconfigured" | "configured" | "invalid";
+
+export type DockerRuntimeConfigView = { configured: boolean, endpoint_host?: string | null, insecure_allowed: boolean, };
+
+export type KubernetesRuntimeConfigView = { configured: boolean, context_name?: string | null, cluster_server_host?: string | null, };
+
+export type WorkspaceRuntimeConfigView = { mode?: WorkspaceRuntimeMode | null, status: WorkspaceRuntimeConfigStatus, updated_at?: string | null, docker?: DockerRuntimeConfigView | null, kubernetes?: KubernetesRuntimeConfigView | null, };
+
+export type Workspace = { id: string, organization_id: string, slug: string, name: string, runtime_config: WorkspaceRuntimeConfigView, archived_at?: string | null, created_at: string, updated_at: string, };
 
 export type OrganizationContext = { organization: Organization, membership: OrganizationMembership, workspaces: Array<Workspace>, permissions: Array<PermissionKey>, };
 
-export type CreateOrganizationRequest = { name: string, slug: string | null, workspace_name: string | null, workspace_slug: string | null, };
+export type WorkspaceRuntimeConfigInput = { "mode": "docker", docker_api_url: string, allow_insecure_local_endpoint: boolean, } | { "mode": "kubernetes", kubeconfig: string, };
 
-export type CreateWorkspaceRequest = { name: string, slug: string | null, };
+export type CreateOrganizationRequest = { name: string, slug: string | null, workspace_name: string | null, workspace_slug: string | null, workspace_runtime_config: WorkspaceRuntimeConfigInput | null, };
 
-export type UpdateWorkspaceRequest = { name: string | null, archived: boolean | null, };
+export type CreateWorkspaceRequest = { name: string, slug: string | null, runtime_config: WorkspaceRuntimeConfigInput | null, };
+
+export type UpdateWorkspaceRequest = { name: string | null, archived: boolean | null, runtime_config: WorkspaceRuntimeConfigInput | null, };
+
+export type MiddlewareDesiredState = "enabled" | "disabled";
+
+export type MiddlewareInstanceStatus = "pending" | "running" | "degraded" | "stopped";
+
+export type MiddlewareInstance = { id: string, workspace_id: string, kind: string, name: string, namespace: string, desired_state: MiddlewareDesiredState, status: MiddlewareInstanceStatus, config: unknown, archived_at?: string | null, created_at: string, updated_at: string, };
+
+export type CreateMiddlewareInstanceRequest = { kind: string, name: string, namespace: string, desired_state: MiddlewareDesiredState, config: unknown, };
+
+export type UpdateMiddlewareInstanceRequest = { desired_state: MiddlewareDesiredState | null, status: MiddlewareInstanceStatus | null, config: unknown | null, archived: boolean | null, };
 
 export type AddOrganizationMemberRequest = { email: string, role: OrganizationRole | null, role_id: string | null, };
 
@@ -83,6 +105,8 @@ export type PluginResponse = { id: string, name: string, middleware_kind: string
 
 export type RunAccepted = { run_id: string, session_id: string, status: AgentRunStatus, };
 
+export type AgentSessionSummary = { id: string, title: string, status: AgentRunStatus, message_count: number, has_pending_approval: boolean, last_error?: string | null, };
+
 export type AgentRunResponse = { status: AgentRunStatus, pending_approval: PendingApproval | null, events: Array<AgentRunEvent>, session: AgentSession, };
 
 export type ApprovalResponse = { approval_record: ApprovalRecord, session: AgentSession, };
@@ -97,10 +121,10 @@ export type MiddlewareTimelineEvent = { id: string, namespace: string, target: s
 
 export type MiddlewareDashboardState = { metrics: Array<MiddlewareMetric>, workloads: Array<MiddlewareWorkload>, events: Array<MiddlewareTimelineEvent>, };
 
-export type WorkspaceSnapshot = { organization: Organization, workspace: Workspace, current_membership: OrganizationMembership, current_permissions: Array<PermissionKey>, session?: AgentSession | null, tools: Array<ToolDefinition>, plugins: Array<PluginResponse>, middleware: MiddlewareDashboardState, approvals: Array<ApprovalRecord>, };
+export type WorkspaceSnapshot = { organization: Organization, workspace: Workspace, runtime_config: WorkspaceRuntimeConfigView, current_membership: OrganizationMembership, current_permissions: Array<PermissionKey>, session?: AgentSession | null, sessions: Array<AgentSessionSummary>, active_session_id?: string | null, tools: Array<ToolDefinition>, plugins: Array<PluginResponse>, middleware_instances: Array<MiddlewareInstance>, middleware: MiddlewareDashboardState, approvals: Array<ApprovalRecord>, };
 
-export type WorkspaceEventType = "connected" | "heartbeat" | "error" | "agent_session_updated" | "agent_run_started" | "agent_message_delta" | "agent_message_committed" | "tool_call_requested" | "tool_result_received" | "agent_run_completed" | "agent_run_failed" | "approval_required" | "approval_decided" | "middleware_snapshot" | "middleware_workload_upserted" | "middleware_workload_removed" | "middleware_metric_changed" | "middleware_event_observed" | "tool_catalog_updated" | "plugin_catalog_updated";
+export type WorkspaceEventType = "connected" | "heartbeat" | "error" | "agent_session_updated" | "agent_run_started" | "agent_message_delta" | "agent_message_committed" | "tool_call_requested" | "tool_result_received" | "agent_run_completed" | "agent_run_failed" | "approval_required" | "approval_decided" | "middleware_snapshot" | "middleware_instance_upserted" | "middleware_instance_removed" | "middleware_workload_upserted" | "middleware_workload_removed" | "middleware_metric_changed" | "middleware_event_observed" | "tool_catalog_updated" | "plugin_catalog_updated";
 
-export type WorkspaceEventPayload = { "kind": "connected", snapshot: WorkspaceSnapshot, } | { "kind": "heartbeat" } | { "kind": "error", message: string, } | { "kind": "agent_session_updated", session: AgentSession, } | { "kind": "agent_run_started", run_id: string, session_id: string, } | { "kind": "agent_message_delta", session_id: string, content: string, } | { "kind": "agent_message_committed", session_id: string, message: AgentMessage, } | { "kind": "tool_call_requested", session_id: string, tool_call: AgentToolCall, } | { "kind": "tool_result_received", session_id: string, tool_call_id: string, name: string, result: ToolResult, } | { "kind": "agent_run_completed", session_id: string, status: AgentRunStatus, output: string, } | { "kind": "agent_run_failed", session_id: string, error: string, } | { "kind": "approval_required", session_id: string, approval: PendingApproval, } | { "kind": "approval_decided", approval_record: ApprovalRecord, session: AgentSession, } | { "kind": "middleware_snapshot", state: MiddlewareDashboardState, } | { "kind": "middleware_workload_upserted", workload: MiddlewareWorkload, } | { "kind": "middleware_workload_removed", namespace: string, name: string, } | { "kind": "middleware_metric_changed", metric: MiddlewareMetric, } | { "kind": "middleware_event_observed", event: MiddlewareTimelineEvent, } | { "kind": "tool_catalog_updated", tools: Array<ToolDefinition>, } | { "kind": "plugin_catalog_updated", plugins: Array<PluginResponse>, };
+export type WorkspaceEventPayload = { "kind": "connected", snapshot: WorkspaceSnapshot, } | { "kind": "heartbeat" } | { "kind": "error", message: string, } | { "kind": "agent_session_updated", session: AgentSession, } | { "kind": "agent_run_started", run_id: string, session_id: string, } | { "kind": "agent_message_delta", session_id: string, content: string, } | { "kind": "agent_message_committed", session_id: string, message: AgentMessage, } | { "kind": "tool_call_requested", session_id: string, tool_call: AgentToolCall, } | { "kind": "tool_result_received", session_id: string, tool_call_id: string, name: string, result: ToolResult, } | { "kind": "agent_run_completed", session_id: string, status: AgentRunStatus, output: string, } | { "kind": "agent_run_failed", session_id: string, error: string, } | { "kind": "approval_required", session_id: string, approval: PendingApproval, } | { "kind": "approval_decided", approval_record: ApprovalRecord, session: AgentSession, } | { "kind": "middleware_snapshot", state: MiddlewareDashboardState, } | { "kind": "middleware_instance_upserted", instance: MiddlewareInstance, } | { "kind": "middleware_instance_removed", id: string, } | { "kind": "middleware_workload_upserted", workload: MiddlewareWorkload, } | { "kind": "middleware_workload_removed", namespace: string, name: string, } | { "kind": "middleware_metric_changed", metric: MiddlewareMetric, } | { "kind": "middleware_event_observed", event: MiddlewareTimelineEvent, } | { "kind": "tool_catalog_updated", tools: Array<ToolDefinition>, } | { "kind": "plugin_catalog_updated", plugins: Array<PluginResponse>, };
 
 export type WorkspaceEvent = { event_id: number, protocol_version: number, occurred_at: string, workspace_id?: string | null, type: WorkspaceEventType, payload: WorkspaceEventPayload, };

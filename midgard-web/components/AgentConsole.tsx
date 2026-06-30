@@ -4,6 +4,7 @@ import { type FormEvent } from "react";
 import type {
   AgentMessage,
   AgentRunStatus,
+  AgentSessionSummary,
   PendingApproval,
 } from "@/lib/types";
 import type { WorkspaceConnectionStatus } from "@/lib/events";
@@ -26,9 +27,13 @@ interface AgentConsoleProps {
   messages: AgentMessage[];
   onApproval: (decision: "approve" | "reject") => void;
   onDraftChange: (draft: string) => void;
+  onNewSession: () => void;
   onSend: (prompt: string) => void;
+  onSessionSelect: (sessionId: string) => void;
   pendingApproval: PendingApproval | null;
   runStatus: AgentRunStatus | "idle";
+  activeSessionId: string | null;
+  sessions: AgentSessionSummary[];
   streamingAssistant: string;
   trace: AgentTraceItem[];
 }
@@ -84,9 +89,13 @@ export function AgentConsole({
   messages,
   onApproval,
   onDraftChange,
+  onNewSession,
   onSend,
+  onSessionSelect,
   pendingApproval,
   runStatus,
+  activeSessionId,
+  sessions,
   streamingAssistant,
   trace,
 }: AgentConsoleProps) {
@@ -115,6 +124,32 @@ export function AgentConsole({
           <h2 id="agent-title">Plan, inspect, and gate operations</h2>
         </div>
         <span className="badge badge-secondary">{runStatus}</span>
+      </div>
+
+      <div className="session-strip" aria-label="Agent sessions">
+        <label className="sr-only" htmlFor="agent-session-select">
+          Agent session
+        </label>
+        <select
+          id="agent-session-select"
+          value={activeSessionId ?? ""}
+          onChange={(event) => onSessionSelect(event.target.value)}
+        >
+          <option value="">Workspace live state</option>
+          {sessions.map((session) => (
+            <option key={session.id} value={session.id}>
+              {session.title.slice(0, 64)} · {session.status}
+            </option>
+          ))}
+        </select>
+        <button
+          className="button button-outline"
+          disabled={busy || !canOperate}
+          type="button"
+          onClick={onNewSession}
+        >
+          New session
+        </button>
       </div>
 
       <div className="quick-prompts" aria-label="Prompt shortcuts">

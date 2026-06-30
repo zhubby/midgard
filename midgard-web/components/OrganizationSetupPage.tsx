@@ -3,7 +3,7 @@
 import { type FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createOrganization } from "@/lib/api";
-import type { AuthUser } from "@/lib/types";
+import type { AuthUser, WorkspaceRuntimeMode } from "@/lib/types";
 
 interface OrganizationSetupPageProps {
   busyAuth: boolean;
@@ -19,6 +19,11 @@ export function OrganizationSetupPage({
   const router = useRouter();
   const [organizationName, setOrganizationName] = useState("");
   const [workspaceName, setWorkspaceName] = useState("Operations");
+  const [runtimeMode, setRuntimeMode] =
+    useState<WorkspaceRuntimeMode>("kubernetes");
+  const [dockerApiUrl, setDockerApiUrl] = useState("");
+  const [allowInsecureDocker, setAllowInsecureDocker] = useState(false);
+  const [kubeconfig, setKubeconfig] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -35,6 +40,17 @@ export function OrganizationSetupPage({
         slug: null,
         workspace_name: workspaceName,
         workspace_slug: null,
+        workspace_runtime_config:
+          runtimeMode === "docker"
+            ? {
+                mode: "docker",
+                docker_api_url: dockerApiUrl,
+                allow_insecure_local_endpoint: allowInsecureDocker,
+              }
+            : {
+                mode: "kubernetes",
+                kubeconfig,
+              },
       });
       const workspace = context.workspaces[0];
       router.replace(
@@ -76,9 +92,9 @@ export function OrganizationSetupPage({
             <p>Agent sessions and middleware events are isolated by workspace.</p>
           </article>
           <article>
-            <span>Default role</span>
-            <strong>Owner</strong>
-            <p>You can add operators and viewers after the workspace is ready.</p>
+            <span>Runtime</span>
+            <strong>{runtimeMode}</strong>
+            <p>Credentials are stored encrypted and never returned to the UI.</p>
           </article>
         </div>
       </section>
@@ -126,6 +142,67 @@ export function OrganizationSetupPage({
             disabled={busy}
             onChange={(event) => setWorkspaceName(event.target.value)}
           />
+
+          <fieldset className="runtime-fieldset">
+            <legend>Runtime mode</legend>
+            <div className="segmented-control" role="group" aria-label="Runtime mode">
+              <button
+                className={runtimeMode === "kubernetes" ? "active" : ""}
+                disabled={busy}
+                type="button"
+                onClick={() => setRuntimeMode("kubernetes")}
+              >
+                Kubernetes
+              </button>
+              <button
+                className={runtimeMode === "docker" ? "active" : ""}
+                disabled={busy}
+                type="button"
+                onClick={() => setRuntimeMode("docker")}
+              >
+                Docker
+              </button>
+            </div>
+          </fieldset>
+
+          {runtimeMode === "docker" ? (
+            <>
+              <label htmlFor="docker-api-url">Docker API URL</label>
+              <input
+                id="docker-api-url"
+                name="docker-api-url"
+                placeholder="https://docker.example.com:2376"
+                value={dockerApiUrl}
+                disabled={busy}
+                onChange={(event) => setDockerApiUrl(event.target.value)}
+              />
+              <label className="checkbox-row" htmlFor="allow-insecure-docker">
+                <input
+                  id="allow-insecure-docker"
+                  checked={allowInsecureDocker}
+                  disabled={busy}
+                  type="checkbox"
+                  onChange={(event) =>
+                    setAllowInsecureDocker(event.target.checked)
+                  }
+                />
+                <span>Allow local HTTP endpoint</span>
+              </label>
+            </>
+          ) : (
+            <>
+              <label htmlFor="kubeconfig">Kubeconfig</label>
+              <textarea
+                id="kubeconfig"
+                name="kubeconfig"
+                placeholder="apiVersion: v1&#10;kind: Config&#10;current-context: operations"
+                rows={8}
+                value={kubeconfig}
+                disabled={busy}
+                onChange={(event) => setKubeconfig(event.target.value)}
+              />
+            </>
+          )}
 
           <button className="button button-primary" disabled={busy} type="submit">
             {busy ? "Creating" : "Create organization"}

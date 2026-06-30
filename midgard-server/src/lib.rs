@@ -20,10 +20,12 @@ use midgard_controller::{MiddlewareController, MiddlewarePlugin};
 use midgard_plugin_example::ExampleRedisPlugin;
 use midgard_storage::{
     permission_catalog, MemoryAgentSessionStore, MemoryAuthStore, MemoryOrganizationStore,
-    NewOrganization, NewOrganizationMembership, NewRbacRole, NewWorkspace, Organization,
-    OrganizationContext, OrganizationMembership, OrganizationMembershipUpdate, OrganizationRole,
-    PermissionCatalogItem, PermissionKey, RbacRole, RbacRoleUpdate, RbacScopeKind,
-    SharedAgentSessionStore, SharedAuthStore, SharedOrganizationStore, Workspace, WorkspaceUpdate,
+    MiddlewareDesiredState, MiddlewareInstance, MiddlewareInstanceStatus, MiddlewareInstanceUpdate,
+    NewMiddlewareInstance, NewOrganization, NewOrganizationMembership, NewRbacRole, NewWorkspace,
+    Organization, OrganizationContext, OrganizationMembership, OrganizationMembershipUpdate,
+    OrganizationRole, PermissionCatalogItem, PermissionKey, RbacRole, RbacRoleUpdate,
+    RbacScopeKind, SharedAgentSessionStore, SharedAuthStore, SharedOrganizationStore, Workspace,
+    WorkspaceRuntimeConfigStatus, WorkspaceRuntimeMode, WorkspaceUpdate,
 };
 use midgard_tools::{ToolDefinition, ToolRegistry};
 use serde::{Deserialize, Serialize};
@@ -34,12 +36,19 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 mod auth;
+mod operator;
+mod runtime;
 mod workspace;
 
 pub use auth::{
     AuthContext, AuthSettings, CreateAuthUserRequest, LoginRequest, LogoutResponse,
     UpdateAuthUserRequest,
 };
+pub use operator::{
+    OperatorConnectionSnapshot, OperatorControlService, OperatorDispatchOutcome,
+    OperatorRegistrationToken, OperatorRegistry, OPERATOR_TOKEN_METADATA,
+};
+pub use runtime::WorkspaceCredentialSettings;
 pub use workspace::{
     agent_run_event_payload, DashboardTone, MiddlewareDashboardState, MiddlewareMetric,
     MiddlewareTimelineEvent, MiddlewareWorkload, WorkspaceEvent, WorkspaceEventBus,
@@ -57,6 +66,8 @@ pub struct AppState {
     pub(crate) auth_settings: AuthSettings,
     pub(crate) events: WorkspaceEventBus,
     pub(crate) middleware: Arc<MiddlewareDashboardState>,
+    pub(crate) workspace_credentials: WorkspaceCredentialSettings,
+    pub(crate) operator_registry: OperatorRegistry,
 }
 
 pub fn app() -> Router {
@@ -106,8 +117,69 @@ pub fn app_with_provider_auth_and_orgs(
     provider: Arc<dyn LlmProvider>,
     auth_settings: AuthSettings,
 ) -> Router {
+    app_with_provider_auth_orgs_and_credentials(
+        sessions,
+        auth,
+        orgs,
+        provider,
+        auth_settings,
+        WorkspaceCredentialSettings::default(),
+    )
+}
+
+pub fn app_with_provider_auth_orgs_and_credentials(
+    sessions: SharedAgentSessionStore,
+    auth: SharedAuthStore,
+    orgs: SharedOrganizationStore,
+    provider: Arc<dyn LlmProvider>,
+    auth_settings: AuthSettings,
+    workspace_credentials: WorkspaceCredentialSettings,
+) -> Router {
+    app_with_provider_auth_orgs_credentials_and_operator_registry(
+        sessions,
+        auth,
+        orgs,
+        provider,
+        auth_settings,
+        workspace_credentials,
+        OperatorRegistry::default(),
+    )
+}
+
+pub fn app_with_provider_auth_orgs_credentials_and_operator_registry(
+    sessions: SharedAgentSessionStore,
+    auth: SharedAuthStore,
+    orgs: SharedOrganizationStore,
+    provider: Arc<dyn LlmProvider>,
+    auth_settings: AuthSettings,
+    workspace_credentials: WorkspaceCredentialSettings,
+    operator_registry: OperatorRegistry,
+) -> Router {
+    app_with_state(
+        app_state_with_provider_auth_orgs_credentials_and_operator_registry(
+            sessions,
+            auth,
+            orgs,
+            provider,
+            auth_settings,
+            workspace_credentials,
+            operator_registry,
+        ),
+    )
+}
+
+pub fn app_state_with_provider_auth_orgs_credentials_and_operator_registry(
+    sessions: SharedAgentSessionStore,
+    auth: SharedAuthStore,
+    orgs: SharedOrganizationStore,
+    provider: Arc<dyn LlmProvider>,
+    auth_settings: AuthSettings,
+    workspace_credentials: WorkspaceCredentialSettings,
+    operator_registry: OperatorRegistry,
+) -> AppState {
     let mut registry = ToolRegistry::default();
     registry.register(CompleteTaskTool);
+    operator::register_operator_tools(&mut registry, orgs.clone(), operator_registry.clone());
 
     let plugin = ExampleRedisPlugin;
     let controller = plugin.controller();
@@ -115,7 +187,7 @@ pub fn app_with_provider_auth_and_orgs(
     let tools = Arc::new(registry);
     let runner = Arc::new(AgentRunner::new(provider, tools.clone()));
 
-    let state = AppState {
+    AppState {
         tools,
         runner,
         plugins: Arc::new(vec![PluginResponse::from(plugin.metadata())]),
@@ -125,8 +197,12 @@ pub fn app_with_provider_auth_and_orgs(
         auth_settings,
         events: WorkspaceEventBus::new(),
         middleware: Arc::new(MiddlewareDashboardState::mock()),
-    };
+        workspace_credentials,
+        operator_registry,
+    }
+}
 
+pub fn app_with_state(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
         .route("/api/auth/login", post(auth::login))
@@ -178,7 +254,7 @@ pub fn app_with_provider_auth_and_orgs(
         )
         .route(
             "/api/orgs/{org_slug}/workspaces/{workspace_slug}",
-            patch(update_workspace),
+            get(get_workspace).patch(update_workspace),
         )
         .route(
             "/api/orgs/{org_slug}/workspaces/{workspace_slug}/events",
@@ -194,7 +270,15 @@ pub fn app_with_provider_auth_and_orgs(
         )
         .route(
             "/api/orgs/{org_slug}/workspaces/{workspace_slug}/agent/sessions",
-            post(create_session),
+            get(list_sessions).post(create_session),
+        )
+        .route(
+            "/api/orgs/{org_slug}/workspaces/{workspace_slug}/middleware",
+            get(list_middleware_instances).post(create_middleware_instance),
+        )
+        .route(
+            "/api/orgs/{org_slug}/workspaces/{workspace_slug}/middleware/{id}",
+            patch(update_middleware_instance),
         )
         .route(
             "/api/orgs/{org_slug}/workspaces/{workspace_slug}/agent/sessions/{id}/messages",
@@ -282,6 +366,12 @@ async fn create_organization(
     let workspace_slug = request
         .workspace_slug
         .unwrap_or_else(|| slug_from_name(&workspace_name, "workspace"));
+    let runtime_config = runtime::prepare_workspace_runtime_config(
+        &state.workspace_credentials,
+        request.workspace_runtime_config.ok_or_else(|| {
+            AppError::BadRequest("workspace_runtime_config is required".to_string())
+        })?,
+    )?;
     let organization = state
         .orgs
         .create_organization(NewOrganization {
@@ -308,6 +398,7 @@ async fn create_organization(
             organization_id: organization.id,
             slug: workspace_slug,
             name: workspace_name,
+            runtime_config: Some(runtime_config),
         })
         .await
         .map_err(storage_app_error)?;
@@ -580,6 +671,16 @@ async fn list_organization_workspaces(
     Ok(Json(context.workspaces))
 }
 
+async fn get_workspace(
+    user: auth::AuthenticatedUser,
+    Path((org_slug, workspace_slug)): Path<(String, String)>,
+    State(state): State<AppState>,
+) -> Result<Json<Workspace>, AppError> {
+    let scope = load_workspace_scope(&state, &user, &org_slug, &workspace_slug).await?;
+    require_org_permission(&state, &scope.membership, PermissionKey::WorkspaceRead).await?;
+    Ok(Json(scope.workspace))
+}
+
 async fn create_workspace(
     user: auth::AuthenticatedUser,
     Path(org_slug): Path<String>,
@@ -592,6 +693,12 @@ async fn create_workspace(
     let slug = request
         .slug
         .unwrap_or_else(|| slug_from_name(&name, "workspace"));
+    let runtime_config = runtime::prepare_workspace_runtime_config(
+        &state.workspace_credentials,
+        request
+            .runtime_config
+            .ok_or_else(|| AppError::BadRequest("runtime_config is required".to_string()))?,
+    )?;
 
     let workspace = state
         .orgs
@@ -599,6 +706,7 @@ async fn create_workspace(
             organization_id: context.organization.id,
             slug,
             name,
+            runtime_config: Some(runtime_config),
         })
         .await
         .map_err(storage_app_error)?;
@@ -622,6 +730,15 @@ async fn update_workspace(
             WorkspaceUpdate {
                 name: request.name,
                 archived: request.archived,
+                runtime_config: request
+                    .runtime_config
+                    .map(|input| {
+                        runtime::prepare_workspace_runtime_config(
+                            &state.workspace_credentials,
+                            input,
+                        )
+                    })
+                    .transpose()?,
             },
         )
         .await
@@ -649,6 +766,24 @@ async fn list_workspace_plugins(
     let scope = load_workspace_scope(&state, &user, &org_slug, &workspace_slug).await?;
     require_org_permission(&state, &scope.membership, PermissionKey::WorkspaceRead).await?;
     Ok(Json((*state.plugins).clone()))
+}
+
+async fn list_sessions(
+    user: auth::AuthenticatedUser,
+    Path((org_slug, workspace_slug)): Path<(String, String)>,
+    State(state): State<AppState>,
+) -> Result<Json<Vec<AgentSessionSummary>>, AppError> {
+    let scope = load_workspace_scope(&state, &user, &org_slug, &workspace_slug).await?;
+    require_org_permission(&state, &scope.membership, PermissionKey::WorkspaceRead).await?;
+    let sessions = state
+        .sessions
+        .list_sessions_in_workspace(scope.workspace.id)
+        .await?
+        .into_iter()
+        .map(AgentSessionSummary::from)
+        .collect();
+
+    Ok(Json(sessions))
 }
 
 async fn create_session(
@@ -806,6 +941,93 @@ async fn list_approval_records(
     Ok(Json(state.sessions.list_approval_records(id).await?))
 }
 
+async fn list_middleware_instances(
+    user: auth::AuthenticatedUser,
+    Path((org_slug, workspace_slug)): Path<(String, String)>,
+    State(state): State<AppState>,
+) -> Result<Json<Vec<MiddlewareInstance>>, AppError> {
+    let scope = load_workspace_scope(&state, &user, &org_slug, &workspace_slug).await?;
+    require_org_permission(&state, &scope.membership, PermissionKey::WorkspaceRead).await?;
+    let instances = state
+        .orgs
+        .list_middleware_instances(scope.workspace.id)
+        .await
+        .map_err(storage_app_error)?;
+
+    Ok(Json(instances))
+}
+
+async fn create_middleware_instance(
+    user: auth::AuthenticatedUser,
+    Path((org_slug, workspace_slug)): Path<(String, String)>,
+    State(state): State<AppState>,
+    Json(request): Json<CreateMiddlewareInstanceRequest>,
+) -> Result<(StatusCode, Json<MiddlewareInstance>), AppError> {
+    let scope = load_workspace_scope(&state, &user, &org_slug, &workspace_slug).await?;
+    require_org_permission(&state, &scope.membership, PermissionKey::WorkspacesManage).await?;
+    require_configured_workspace_runtime(&scope.workspace)?;
+    let instance = state
+        .orgs
+        .create_middleware_instance(NewMiddlewareInstance {
+            workspace_id: scope.workspace.id,
+            kind: request.kind,
+            name: request.name,
+            namespace: request.namespace,
+            desired_state: request.desired_state,
+            status: MiddlewareInstanceStatus::Pending,
+            config: request.config,
+        })
+        .await
+        .map_err(storage_app_error)?;
+    publish_middleware_instance_change(&state, scope.workspace.id, &instance, false);
+    operator::operator_app_error(state.operator_registry.dispatch_command(
+        &scope.workspace.id.to_string(),
+        &instance.kind,
+        operator::command_for_instance(midgard_protocol::CommandType::Create, &instance),
+    ))?;
+
+    Ok((StatusCode::CREATED, Json(instance)))
+}
+
+async fn update_middleware_instance(
+    user: auth::AuthenticatedUser,
+    Path((org_slug, workspace_slug, id)): Path<(String, String, Uuid)>,
+    State(state): State<AppState>,
+    Json(request): Json<UpdateMiddlewareInstanceRequest>,
+) -> Result<Json<MiddlewareInstance>, AppError> {
+    let scope = load_workspace_scope(&state, &user, &org_slug, &workspace_slug).await?;
+    require_org_permission(&state, &scope.membership, PermissionKey::WorkspacesManage).await?;
+    let archived = request.archived.unwrap_or(false);
+    let instance = state
+        .orgs
+        .update_middleware_instance(
+            scope.workspace.id,
+            id,
+            MiddlewareInstanceUpdate {
+                desired_state: request.desired_state,
+                status: request.status,
+                config: request.config,
+                archived: request.archived,
+            },
+        )
+        .await
+        .map_err(storage_app_error)?
+        .ok_or_else(|| AppError::NotFound("middleware instance not found".to_string()))?;
+    publish_middleware_instance_change(&state, scope.workspace.id, &instance, archived);
+    let command_type = if archived {
+        midgard_protocol::CommandType::Delete
+    } else {
+        midgard_protocol::CommandType::Update
+    };
+    operator::operator_app_error(state.operator_registry.dispatch_command(
+        &scope.workspace.id.to_string(),
+        &instance.kind,
+        operator::command_for_instance(command_type, &instance),
+    ))?;
+
+    Ok(Json(instance))
+}
+
 async fn load_or_resumed_session(
     state: &AppState,
     workspace_id: Uuid,
@@ -878,12 +1100,18 @@ async fn workspace_events(
         )),
     }
 
-    initial_events.push(state.events.local_event_for_workspace(
-        &workspace_id,
-        WorkspaceEventPayload::MiddlewareSnapshot {
-            state: (*state.middleware).clone(),
-        },
-    ));
+    let connected_middleware_snapshot = match &initial_events[0].payload {
+        WorkspaceEventPayload::Connected { snapshot } => Some(snapshot.middleware.clone()),
+        _ => None,
+    };
+    if let Some(middleware_snapshot) = connected_middleware_snapshot {
+        initial_events.push(state.events.local_event_for_workspace(
+            &workspace_id,
+            WorkspaceEventPayload::MiddlewareSnapshot {
+                state: middleware_snapshot,
+            },
+        ));
+    }
 
     let mut receiver = state.events.subscribe();
     let bus = state.events.clone();
@@ -946,18 +1174,224 @@ async fn workspace_snapshot(
         Some(id) => state.sessions.list_approval_records(id).await?,
         None => Vec::new(),
     };
+    let sessions = state
+        .sessions
+        .list_sessions_in_workspace(scope.workspace.id)
+        .await?
+        .into_iter()
+        .map(AgentSessionSummary::from)
+        .collect::<Vec<_>>();
+    let middleware_instances = state
+        .orgs
+        .list_middleware_instances(scope.workspace.id)
+        .await
+        .map_err(storage_app_error)?;
+    let middleware = middleware_dashboard_for_workspace(
+        &scope.workspace,
+        &middleware_instances,
+        (*state.middleware).clone(),
+    );
 
     Ok(WorkspaceSnapshot {
         organization: scope.organization.clone(),
         workspace: scope.workspace.clone(),
+        runtime_config: scope.workspace.runtime_config.clone(),
         current_membership: scope.membership.clone(),
         current_permissions: scope.permissions.clone(),
         session,
+        sessions,
+        active_session_id: session_id,
         tools: state.tools.definitions(),
         plugins: (*state.plugins).clone(),
-        middleware: (*state.middleware).clone(),
+        middleware_instances,
+        middleware,
         approvals,
     })
+}
+
+fn require_configured_workspace_runtime(workspace: &Workspace) -> Result<(), AppError> {
+    if workspace.runtime_config.status == WorkspaceRuntimeConfigStatus::Configured
+        && workspace.runtime_config.mode.is_some()
+    {
+        return Ok(());
+    }
+
+    Err(AppError::BadRequest(
+        "workspace runtime must be configured before adding middleware".to_string(),
+    ))
+}
+
+pub(crate) fn publish_middleware_instance_change(
+    state: &AppState,
+    workspace_id: Uuid,
+    instance: &MiddlewareInstance,
+    archived: bool,
+) {
+    let workspace_id = workspace_id.to_string();
+    if archived {
+        state.events.publish_for_workspace(
+            workspace_id.clone(),
+            WorkspaceEventPayload::MiddlewareInstanceRemoved {
+                id: instance.id.to_string(),
+            },
+        );
+        state.events.publish_for_workspace(
+            workspace_id,
+            WorkspaceEventPayload::MiddlewareWorkloadRemoved {
+                namespace: instance.namespace.clone(),
+                name: instance.name.clone(),
+            },
+        );
+        return;
+    }
+
+    state.events.publish_for_workspace(
+        workspace_id.clone(),
+        WorkspaceEventPayload::MiddlewareInstanceUpserted {
+            instance: instance.clone(),
+        },
+    );
+    state.events.publish_for_workspace(
+        workspace_id.clone(),
+        WorkspaceEventPayload::MiddlewareWorkloadUpserted {
+            workload: middleware_workload_from_instance(instance),
+        },
+    );
+    state.events.publish_for_workspace(
+        workspace_id,
+        WorkspaceEventPayload::MiddlewareEventObserved {
+            event: middleware_event_from_instance(instance),
+        },
+    );
+}
+
+fn middleware_dashboard_for_workspace(
+    workspace: &Workspace,
+    instances: &[MiddlewareInstance],
+    fallback: MiddlewareDashboardState,
+) -> MiddlewareDashboardState {
+    if instances.is_empty() {
+        return MiddlewareDashboardState {
+            metrics: workspace_runtime_metrics(workspace, 0),
+            workloads: fallback.workloads,
+            events: fallback.events,
+        };
+    }
+
+    let healthy = instances
+        .iter()
+        .filter(|instance| instance.status == MiddlewareInstanceStatus::Running)
+        .count();
+    let degraded = instances
+        .iter()
+        .filter(|instance| instance.status == MiddlewareInstanceStatus::Degraded)
+        .count();
+
+    MiddlewareDashboardState {
+        metrics: workspace_runtime_metrics(workspace, instances.len())
+            .into_iter()
+            .chain([MiddlewareMetric {
+                id: "middleware_health".to_string(),
+                label: "Middleware health".to_string(),
+                value: format!("{healthy}/{}", instances.len()),
+                detail: if degraded == 0 {
+                    "no degraded instances".to_string()
+                } else {
+                    format!("{degraded} degraded")
+                },
+                tone: if degraded == 0 {
+                    DashboardTone::Ready
+                } else {
+                    DashboardTone::Warn
+                },
+            }])
+            .collect(),
+        workloads: instances
+            .iter()
+            .map(middleware_workload_from_instance)
+            .collect(),
+        events: instances
+            .iter()
+            .map(middleware_event_from_instance)
+            .take(8)
+            .collect(),
+    }
+}
+
+fn workspace_runtime_metrics(
+    workspace: &Workspace,
+    instance_count: usize,
+) -> Vec<MiddlewareMetric> {
+    let runtime_mode = workspace
+        .runtime_config
+        .mode
+        .as_ref()
+        .map(WorkspaceRuntimeMode::as_str)
+        .unwrap_or("unconfigured");
+    vec![
+        MiddlewareMetric {
+            id: "runtime_mode".to_string(),
+            label: "Runtime mode".to_string(),
+            value: runtime_mode.to_string(),
+            detail: workspace.runtime_config.status.as_str().to_string(),
+            tone: if workspace.runtime_config.status == WorkspaceRuntimeConfigStatus::Configured {
+                DashboardTone::Ready
+            } else {
+                DashboardTone::Warn
+            },
+        },
+        MiddlewareMetric {
+            id: "middleware_instances".to_string(),
+            label: "Middleware instances".to_string(),
+            value: instance_count.to_string(),
+            detail: "registered in this workspace".to_string(),
+            tone: DashboardTone::Neutral,
+        },
+    ]
+}
+
+fn middleware_workload_from_instance(instance: &MiddlewareInstance) -> MiddlewareWorkload {
+    let (health, saturation, risk, tone) = match instance.status {
+        MiddlewareInstanceStatus::Running => ("Running", 38, "Low", DashboardTone::Ready),
+        MiddlewareInstanceStatus::Pending => ("Pending", 12, "Medium", DashboardTone::Neutral),
+        MiddlewareInstanceStatus::Degraded => ("Degraded", 76, "High", DashboardTone::Warn),
+        MiddlewareInstanceStatus::Stopped => ("Stopped", 0, "Medium", DashboardTone::Danger),
+    };
+
+    MiddlewareWorkload {
+        id: format!("{}/{}", instance.namespace, instance.name),
+        namespace: instance.namespace.clone(),
+        name: instance.name.clone(),
+        kind: instance.kind.clone(),
+        health: health.to_string(),
+        saturation,
+        risk: risk.to_string(),
+        tone,
+    }
+}
+
+fn middleware_event_from_instance(instance: &MiddlewareInstance) -> MiddlewareTimelineEvent {
+    let (reason, tone) = match instance.status {
+        MiddlewareInstanceStatus::Running => ("Running", DashboardTone::Ready),
+        MiddlewareInstanceStatus::Pending => ("Pending", DashboardTone::Neutral),
+        MiddlewareInstanceStatus::Degraded => ("Degraded", DashboardTone::Warn),
+        MiddlewareInstanceStatus::Stopped => ("Stopped", DashboardTone::Danger),
+    };
+
+    MiddlewareTimelineEvent {
+        id: format!("middleware-{}-{}", instance.id, instance.updated_at),
+        namespace: instance.namespace.clone(),
+        target: instance.name.clone(),
+        reason: reason.to_string(),
+        message: format!(
+            "{} is {} with desired state {}.",
+            instance.kind,
+            instance.status.as_str(),
+            instance.desired_state.as_str()
+        ),
+        observed_at: instance.updated_at.clone(),
+        tone,
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -1058,7 +1492,7 @@ async fn require_org_permission(
     )))
 }
 
-fn storage_app_error(err: midgard_core::MidgardError) -> AppError {
+pub(crate) fn storage_app_error(err: midgard_core::MidgardError) -> AppError {
     match err {
         midgard_core::MidgardError::Storage(message)
             if message.contains("already exists")
@@ -1248,6 +1682,21 @@ pub struct CreateOrganizationRequest {
     pub workspace_name: Option<String>,
     #[serde(default)]
     pub workspace_slug: Option<String>,
+    #[serde(default)]
+    pub workspace_runtime_config: Option<WorkspaceRuntimeConfigInput>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum WorkspaceRuntimeConfigInput {
+    Docker {
+        docker_api_url: String,
+        #[serde(default)]
+        allow_insecure_local_endpoint: bool,
+    },
+    Kubernetes {
+        kubeconfig: String,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, TS)]
@@ -1255,6 +1704,8 @@ pub struct CreateWorkspaceRequest {
     pub name: String,
     #[serde(default)]
     pub slug: Option<String>,
+    #[serde(default)]
+    pub runtime_config: Option<WorkspaceRuntimeConfigInput>,
 }
 
 #[derive(Clone, Debug, Deserialize, TS)]
@@ -1263,6 +1714,42 @@ pub struct UpdateWorkspaceRequest {
     pub name: Option<String>,
     #[serde(default)]
     pub archived: Option<bool>,
+    #[serde(default)]
+    pub runtime_config: Option<WorkspaceRuntimeConfigInput>,
+}
+
+#[derive(Clone, Debug, Deserialize, TS)]
+pub struct CreateMiddlewareInstanceRequest {
+    pub kind: String,
+    pub name: String,
+    #[serde(default = "default_middleware_namespace")]
+    pub namespace: String,
+    #[serde(default = "default_middleware_desired_state")]
+    pub desired_state: MiddlewareDesiredState,
+    #[serde(default)]
+    #[ts(type = "unknown")]
+    pub config: serde_json::Value,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, TS)]
+pub struct UpdateMiddlewareInstanceRequest {
+    #[serde(default)]
+    pub desired_state: Option<MiddlewareDesiredState>,
+    #[serde(default)]
+    pub status: Option<MiddlewareInstanceStatus>,
+    #[serde(default)]
+    #[ts(type = "unknown | null")]
+    pub config: Option<serde_json::Value>,
+    #[serde(default)]
+    pub archived: Option<bool>,
+}
+
+fn default_middleware_namespace() -> String {
+    "default".to_string()
+}
+
+fn default_middleware_desired_state() -> MiddlewareDesiredState {
+    MiddlewareDesiredState::Enabled
 }
 
 #[derive(Clone, Debug, Deserialize, TS)]
@@ -1360,6 +1847,39 @@ pub struct RunAccepted {
     #[ts(type = "string")]
     pub session_id: Uuid,
     pub status: AgentRunStatus,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
+pub struct AgentSessionSummary {
+    #[ts(type = "string")]
+    pub id: Uuid,
+    pub title: String,
+    pub status: AgentRunStatus,
+    pub message_count: usize,
+    pub has_pending_approval: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+}
+
+impl From<AgentSession> for AgentSessionSummary {
+    fn from(session: AgentSession) -> Self {
+        let title = session
+            .messages
+            .iter()
+            .find(|message| matches!(message.role, midgard_agent::AgentRole::User))
+            .map(|message| message.content.trim().to_string())
+            .filter(|title| !title.is_empty())
+            .unwrap_or_else(|| "Untitled session".to_string());
+
+        Self {
+            id: session.id,
+            title,
+            status: session.status,
+            message_count: session.messages.len(),
+            has_pending_approval: session.pending_approval.is_some(),
+            last_error: session.last_error,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]

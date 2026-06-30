@@ -135,6 +135,29 @@ pub struct StoredWorkspace {
     pub organization_id: Uuid,
     pub slug: String,
     pub name: String,
+    pub runtime_mode: Option<String>,
+    pub runtime_config_ciphertext: Option<String>,
+    pub runtime_config_summary_json: Option<String>,
+    pub runtime_config_status: String,
+    pub runtime_config_updated_at: Option<String>,
+    pub archived_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, toasty::Model)]
+#[table = "middleware_instances"]
+pub struct StoredMiddlewareInstance {
+    #[key]
+    pub id: Uuid,
+    #[index]
+    pub workspace_id: Uuid,
+    pub kind: String,
+    pub name: String,
+    pub namespace: String,
+    pub desired_state: String,
+    pub status: String,
+    pub config_json: String,
     pub archived_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
@@ -183,6 +206,7 @@ pub fn storage_models() -> toasty::ModelSet {
         StoredOrganizationMembership,
         StoredWorkspace,
         StoredRbacRole,
-        StoredRbacRolePermission
+        StoredRbacRolePermission,
+        StoredMiddlewareInstance
     )
 }

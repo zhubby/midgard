@@ -1,0 +1,125 @@
+syntax = "proto3";
+
+package midgard.operator.v1;
+
+import "google/protobuf/struct.proto";
+
+service OperatorControl {
+  rpc OpenChannel(stream OperatorToServer) returns (stream ServerToOperator);
+}
+
+message OperatorToServer {
+  string request_id = 1;
+
+  oneof payload {
+    OperatorRegistration registration = 10;
+    OperatorHeartbeat heartbeat = 11;
+    CapabilityReport capability_report = 12;
+    InventorySnapshot inventory_snapshot = 13;
+    OperationStatus operation_status = 14;
+    OperationResult operation_result = 15;
+  }
+}
+
+message ServerToOperator {
+  string request_id = 1;
+
+  oneof payload {
+    ServerAck ack = 10;
+    ServerCommand command = 11;
+  }
+}
+
+message OperatorRegistration {
+  uint32 protocol_version = 1;
+  string operator_id = 2;
+  string workspace_id = 3;
+  string middleware_kind = 4;
+  string display_name = 5;
+  repeated string supported_operations = 6;
+}
+
+message OperatorHeartbeat {
+  string operator_id = 1;
+  int64 observed_at_unix_ms = 2;
+}
+
+message CapabilityReport {
+  string operator_id = 1;
+  repeated OperatorCapability capabilities = 2;
+}
+
+message OperatorCapability {
+  string id = 1;
+  string name = 2;
+  string risk_level = 3;
+}
+
+message InventorySnapshot {
+  string operator_id = 1;
+  repeated MiddlewareResource instances = 2;
+}
+
+message OperationStatus {
+  string operation_id = 1;
+  string instance_id = 2;
+  MiddlewareStatus status = 3;
+  string message = 4;
+}
+
+message OperationResult {
+  string operation_id = 1;
+  bool success = 2;
+  string message = 3;
+  MiddlewareResource instance = 4;
+}
+
+message ServerAck {
+  bool accepted = 1;
+  string message = 2;
+}
+
+message ServerCommand {
+  string operation_id = 1;
+  CommandType command_type = 2;
+  MiddlewareResource instance = 3;
+  repeated MiddlewareResource instances = 4;
+}
+
+message MiddlewareResource {
+  string id = 1;
+  string workspace_id = 2;
+  string kind = 3;
+  string name = 4;
+  string namespace = 5;
+  DesiredState desired_state = 6;
+  MiddlewareStatus status = 7;
+  google.protobuf.Struct config = 8;
+  string archived_at = 9;
+  string created_at = 10;
+  string updated_at = 11;
+}
+
+enum DesiredState {
+  UNKNOWN_DESIRED_STATE = 0;
+  ENABLED = 1;
+  DISABLED = 2;
+}
+
+enum MiddlewareStatus {
+  UNKNOWN_MIDDLEWARE_STATUS = 0;
+  PENDING = 1;
+  RUNNING = 2;
+  DEGRADED = 3;
+  STOPPED = 4;
+}
+
+enum CommandType {
+  UNKNOWN_COMMAND_TYPE = 0;
+  RECONCILE = 1;
+  CREATE = 2;
+  UPDATE = 3;
+  DELETE = 4;
+  QUERY = 5;
+  REFRESH = 6;
+}

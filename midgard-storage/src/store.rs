@@ -9,7 +9,8 @@ use crate::auth::{
     NewUser,
 };
 use crate::org::{
-    NewOrganization, NewOrganizationMembership, NewWorkspace, Organization, OrganizationContext,
+    MiddlewareInstance, MiddlewareInstanceUpdate, NewMiddlewareInstance, NewOrganization,
+    NewOrganizationMembership, NewWorkspace, Organization, OrganizationContext,
     OrganizationMembership, OrganizationMembershipUpdate, Workspace, WorkspaceUpdate,
 };
 use crate::rbac::{NewRbacRole, PermissionKey, RbacRole, RbacRoleUpdate};
@@ -45,6 +46,11 @@ pub trait AgentSessionStore: Send + Sync {
         workspace_id: Uuid,
         id: Uuid,
     ) -> MidgardResult<Option<AgentSession>>;
+
+    async fn list_sessions_in_workspace(
+        &self,
+        workspace_id: Uuid,
+    ) -> MidgardResult<Vec<AgentSession>>;
 
     async fn save_session(&self, session: AgentSession) -> MidgardResult<AgentSession> {
         self.save_session_in_workspace(Uuid::nil(), session).await
@@ -152,6 +158,24 @@ pub trait OrganizationStore: Send + Sync {
         slug: &str,
         update: WorkspaceUpdate,
     ) -> MidgardResult<Option<Workspace>>;
+    async fn list_middleware_instances(
+        &self,
+        workspace_id: Uuid,
+    ) -> MidgardResult<Vec<MiddlewareInstance>>;
+    async fn list_middleware_instances_for_reconciliation(
+        &self,
+        workspace_id: Uuid,
+    ) -> MidgardResult<Vec<MiddlewareInstance>>;
+    async fn create_middleware_instance(
+        &self,
+        instance: NewMiddlewareInstance,
+    ) -> MidgardResult<MiddlewareInstance>;
+    async fn update_middleware_instance(
+        &self,
+        workspace_id: Uuid,
+        id: Uuid,
+        update: MiddlewareInstanceUpdate,
+    ) -> MidgardResult<Option<MiddlewareInstance>>;
     async fn list_organization_roles(&self, organization_id: Uuid) -> MidgardResult<Vec<RbacRole>>;
     async fn load_organization_role(
         &self,

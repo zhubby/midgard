@@ -1,16 +1,22 @@
 import type {
   ApprovalRecord,
+  MiddlewareInstance,
   MiddlewareDashboardState,
   MiddlewareMetric,
   MiddlewareWorkload,
   PluginResponse,
   ToolDefinition,
+  WorkspaceRuntimeConfigView,
 } from "@/lib/types";
 
 interface MiddlewareDashboardProps {
   approvals: ApprovalRecord[];
+  canManageWorkspace: boolean;
+  instances: MiddlewareInstance[];
   middleware: MiddlewareDashboardState;
   plugins: PluginResponse[];
+  runtimeConfig: WorkspaceRuntimeConfigView;
+  settingsHref: string;
   tools: ToolDefinition[];
 }
 
@@ -24,11 +30,24 @@ function workloadTone(workload: MiddlewareWorkload) {
 
 export function MiddlewareDashboard({
   approvals,
+  canManageWorkspace,
+  instances,
   middleware,
   plugins,
+  runtimeConfig,
+  settingsHref,
   tools,
 }: MiddlewareDashboardProps) {
   const gatedTools = tools.filter((tool) => tool.requires_approval).length;
+  const runtimeLabel = runtimeConfig.mode ?? "unconfigured";
+  const runtimeDetail =
+    runtimeConfig.mode === "docker"
+      ? runtimeConfig.docker?.endpoint_host ?? "docker endpoint saved"
+      : runtimeConfig.mode === "kubernetes"
+        ? runtimeConfig.kubernetes?.context_name ??
+          runtimeConfig.kubernetes?.cluster_server_host ??
+          "kubeconfig saved"
+        : "open workspace settings";
 
   return (
     <aside
@@ -44,6 +63,24 @@ export function MiddlewareDashboard({
           {plugins.length} plugin{plugins.length === 1 ? "" : "s"}
         </span>
       </div>
+
+      <section className="runtime-summary" aria-label="Workspace runtime">
+        <div>
+          <span>Runtime</span>
+          <strong>{runtimeLabel}</strong>
+          <p>{runtimeDetail}</p>
+        </div>
+        <div>
+          <span>Status</span>
+          <strong>{runtimeConfig.status}</strong>
+          <p>{runtimeConfig.updated_at ?? "not configured"}</p>
+        </div>
+        {canManageWorkspace && (
+          <a className="button button-outline" href={settingsHref}>
+            Settings
+          </a>
+        )}
+      </section>
 
       <section className="metric-grid" aria-label="Middleware metrics">
         {middleware.metrics.map((metric) => (
@@ -98,6 +135,36 @@ export function MiddlewareDashboard({
           ))}
           {middleware.workloads.length === 0 && (
             <article className="empty-row">No workloads observed.</article>
+          )}
+        </div>
+      </section>
+
+      <section className="dashboard-section" aria-labelledby="instances-title">
+        <div className="section-row">
+          <h3 id="instances-title">Middleware instances</h3>
+          <span className="subtle-count">{instances.length}</span>
+        </div>
+        <div className="instance-list">
+          {instances.map((instance) => (
+            <article className="instance-row" key={instance.id}>
+              <div>
+                <strong>{instance.name}</strong>
+                <p>
+                  {instance.kind} / {instance.namespace}
+                </p>
+              </div>
+              <div>
+                <span className="badge badge-outline">
+                  {instance.desired_state}
+                </span>
+                <span className={`badge badge-${instance.status === "degraded" ? "warn" : instance.status === "running" ? "ready" : "neutral"}`}>
+                  {instance.status}
+                </span>
+              </div>
+            </article>
+          ))}
+          {instances.length === 0 && (
+            <article className="empty-row">No middleware instances registered.</article>
           )}
         </div>
       </section>

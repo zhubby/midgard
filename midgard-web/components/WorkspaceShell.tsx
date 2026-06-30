@@ -12,9 +12,11 @@ import type {
   AgentMessage,
   AgentRunStatus,
   AgentSession,
+  AgentSessionSummary,
   ApprovalRecord,
   AuthUser,
   MiddlewareDashboardState,
+  MiddlewareInstance,
   OrganizationContext,
   PendingApproval,
   PermissionKey,
@@ -22,16 +24,21 @@ import type {
   ToolDefinition,
   Workspace,
   WorkspaceEvent,
+  WorkspaceRuntimeConfigView,
 } from "@/lib/types";
 
 interface WorkspaceState {
   connectionStatus: WorkspaceConnectionStatus;
   session: AgentSession | null;
+  activeSessionId: string | null;
+  sessions: AgentSessionSummary[];
   messages: AgentMessage[];
   streamingAssistant: string;
   trace: AgentTraceItem[];
   tools: ToolDefinition[];
   plugins: PluginResponse[];
+  runtimeConfig: WorkspaceRuntimeConfigView;
+  middlewareInstances: MiddlewareInstance[];
   middleware: MiddlewareDashboardState;
   approvals: ApprovalRecord[];
   permissions: PermissionKey[];
@@ -45,6 +52,8 @@ type WorkspaceAction =
   | { type: "connection"; status: WorkspaceConnectionStatus }
   | { type: "error"; message: string | null }
   | { type: "session_loaded"; session: AgentSession }
+  | { type: "select_session"; sessionId: string | null }
+  | { type: "new_session" }
   | { type: "run_busy"; busy: boolean }
   | { type: "event"; event: WorkspaceEvent };
 
@@ -54,14 +63,22 @@ const emptyMiddleware: MiddlewareDashboardState = {
   events: [],
 };
 
+const emptyRuntimeConfig: WorkspaceRuntimeConfigView = {
+  status: "unconfigured",
+};
+
 const initialState: WorkspaceState = {
   connectionStatus: "connecting",
   session: null,
+  activeSessionId: null,
+  sessions: [],
   messages: [],
   streamingAssistant: "",
   trace: [],
   tools: [],
   plugins: [],
+  runtimeConfig: emptyRuntimeConfig,
+  middlewareInstances: [],
   middleware: emptyMiddleware,
   approvals: [],
   permissions: [],
@@ -94,6 +111,30 @@ function upsertApproval(records: ApprovalRecord[], record: ApprovalRecord) {
   return [record, ...records.filter((current) => current.id !== record.id)];
 }
 
+function summarizeSession(session: AgentSession): AgentSessionSummary {
+  const title =
+    session.messages.find((message) => message.role === "user")?.content.trim() ||
+    "Untitled session";
+  return {
+    id: session.id,
+    title,
+    status: session.status,
+    message_count: session.messages.length,
+    has_pending_approval: Boolean(session.pending_approval),
+    last_error: session.last_error ?? null,
+  };
+}
+
+function upsertSessionSummary(
+  sessions: AgentSessionSummary[],
+  summary: AgentSessionSummary,
+) {
+  return [
+    summary,
+    ...sessions.filter((session) => session.id !== summary.id),
+  ];
+}
+
 function reduceWorkspace(
   state: WorkspaceState,
   action: WorkspaceAction,
@@ -107,9 +148,34 @@ function reduceWorkspace(
       return {
         ...state,
         session: action.session,
+        activeSessionId: action.session.id,
+        sessions: upsertSessionSummary(state.sessions, summarizeSession(action.session)),
         messages: action.session.messages,
         pendingApproval: action.session.pending_approval ?? null,
         runStatus: action.session.status,
+      };
+    case "select_session":
+      return {
+        ...state,
+        activeSessionId: action.sessionId,
+        session: null,
+        messages: [],
+        streamingAssistant: "",
+        trace: [],
+        pendingApproval: null,
+        runStatus: "idle",
+      };
+    case "new_session":
+      return {
+        ...state,
+        activeSessionId: null,
+        session: null,
+        messages: [],
+        streamingAssistant: "",
+        trace: [],
+        pendingApproval: null,
+        runStatus: "idle",
+        error: null,
       };
     case "run_busy":
       return { ...state, busy: action.busy };
@@ -130,9 +196,16 @@ function reduceWorkspaceEvent(
         ...state,
         connectionStatus: "connected",
         session: payload.snapshot.session ?? null,
+        activeSessionId:
+          payload.snapshot.active_session_id ??
+          payload.snapshot.session?.id ??
+          state.activeSessionId,
+        sessions: payload.snapshot.sessions,
         messages: payload.snapshot.session?.messages ?? [],
         tools: payload.snapshot.tools,
         plugins: payload.snapshot.plugins,
+        runtimeConfig: payload.snapshot.runtime_config,
+        middlewareInstances: payload.snapshot.middleware_instances,
         middleware: payload.snapshot.middleware,
         approvals: payload.snapshot.approvals,
         permissions: payload.snapshot.current_permissions,
@@ -145,15 +218,35 @@ function reduceWorkspaceEvent(
     case "error":
       return { ...state, error: payload.message };
     case "agent_session_updated":
+      if (
+        state.activeSessionId &&
+        payload.session.id !== state.activeSessionId
+      ) {
+        return {
+          ...state,
+          sessions: upsertSessionSummary(
+            state.sessions,
+            summarizeSession(payload.session),
+          ),
+        };
+      }
       return {
         ...state,
         session: payload.session,
+        activeSessionId: payload.session.id,
+        sessions: upsertSessionSummary(
+          state.sessions,
+          summarizeSession(payload.session),
+        ),
         messages: payload.session.messages,
         pendingApproval: payload.session.pending_approval ?? state.pendingApproval,
         runStatus: payload.session.status,
         busy: payload.session.status === "running",
       };
     case "agent_run_started":
+      if (state.activeSessionId && payload.session_id !== state.activeSessionId) {
+        return state;
+      }
       return {
         ...state,
         runStatus: "running",
@@ -168,11 +261,17 @@ function reduceWorkspaceEvent(
         }),
       };
     case "agent_message_delta":
+      if (state.activeSessionId && payload.session_id !== state.activeSessionId) {
+        return state;
+      }
       return {
         ...state,
         streamingAssistant: state.streamingAssistant + payload.content,
       };
     case "agent_message_committed":
+      if (state.activeSessionId && payload.session_id !== state.activeSessionId) {
+        return state;
+      }
       return {
         ...state,
         messages: appendMessage(state.messages, payload.message),
@@ -180,6 +279,9 @@ function reduceWorkspaceEvent(
           payload.message.role === "assistant" ? "" : state.streamingAssistant,
       };
     case "tool_call_requested":
+      if (state.activeSessionId && payload.session_id !== state.activeSessionId) {
+        return state;
+      }
       return {
         ...state,
         trace: upsertTrace(state.trace, {
@@ -190,6 +292,9 @@ function reduceWorkspaceEvent(
         }),
       };
     case "tool_result_received":
+      if (state.activeSessionId && payload.session_id !== state.activeSessionId) {
+        return state;
+      }
       return {
         ...state,
         trace: upsertTrace(state.trace, {
@@ -200,6 +305,9 @@ function reduceWorkspaceEvent(
         }),
       };
     case "approval_required":
+      if (state.activeSessionId && payload.session_id !== state.activeSessionId) {
+        return state;
+      }
       return {
         ...state,
         pendingApproval: payload.approval,
@@ -223,6 +331,9 @@ function reduceWorkspaceEvent(
             : null,
       };
     case "agent_run_completed":
+      if (state.activeSessionId && payload.session_id !== state.activeSessionId) {
+        return state;
+      }
       return {
         ...state,
         runStatus: payload.status,
@@ -236,6 +347,9 @@ function reduceWorkspaceEvent(
         }),
       };
     case "agent_run_failed":
+      if (state.activeSessionId && payload.session_id !== state.activeSessionId) {
+        return state;
+      }
       return {
         ...state,
         runStatus: "failed",
@@ -250,6 +364,23 @@ function reduceWorkspaceEvent(
       };
     case "middleware_snapshot":
       return { ...state, middleware: payload.state };
+    case "middleware_instance_upserted":
+      return {
+        ...state,
+        middlewareInstances: [
+          payload.instance,
+          ...state.middlewareInstances.filter(
+            (instance) => instance.id !== payload.instance.id,
+          ),
+        ],
+      };
+    case "middleware_instance_removed":
+      return {
+        ...state,
+        middlewareInstances: state.middlewareInstances.filter(
+          (instance) => instance.id !== payload.id,
+        ),
+      };
     case "middleware_workload_upserted":
       return {
         ...state,
@@ -342,13 +473,26 @@ export function WorkspaceShell({
     const connection = connectWorkspaceEvents({
       orgSlug,
       workspaceSlug,
+      sessionId: state.activeSessionId,
       onEvent: (event) => dispatch({ type: "event", event }),
       onStatus: (status) => dispatch({ type: "connection", status }),
       onError: (message) => dispatch({ type: "error", message }),
     });
 
     return () => connection.close();
-  }, [orgSlug, workspaceSlug]);
+  }, [orgSlug, workspaceSlug, state.activeSessionId]);
+
+  function handleNewSession() {
+    dispatch({ type: "new_session" });
+    setDraft("");
+  }
+
+  function handleSessionSelect(sessionId: string) {
+    dispatch({
+      type: "select_session",
+      sessionId: sessionId || null,
+    });
+  }
 
   async function handleSend(prompt: string) {
     const message = prompt.trim();
@@ -441,6 +585,14 @@ export function WorkspaceShell({
               Admin
             </a>
           )}
+          {context.permissions.includes("workspaces.manage") && (
+            <a
+              className="button button-outline"
+              href={`/orgs/${orgSlug}/workspaces/${workspaceSlug}/settings`}
+            >
+              Workspace
+            </a>
+          )}
           <button
             className="button button-outline logout-button"
             disabled={busyAuth}
@@ -454,6 +606,7 @@ export function WorkspaceShell({
 
       <section className="workspace-grid" aria-label="Midgard operations workspace">
         <AgentConsole
+          activeSessionId={state.activeSessionId}
           busy={state.busy}
           canOperate={canOperate}
           connectionStatus={state.connectionStatus}
@@ -462,16 +615,23 @@ export function WorkspaceShell({
           messages={state.messages}
           onApproval={handleApproval}
           onDraftChange={setDraft}
+          onNewSession={handleNewSession}
           onSend={handleSend}
+          onSessionSelect={handleSessionSelect}
           pendingApproval={state.pendingApproval}
           runStatus={state.runStatus}
+          sessions={state.sessions}
           streamingAssistant={state.streamingAssistant}
           trace={state.trace}
         />
         <MiddlewareDashboard
           approvals={state.approvals}
+          canManageWorkspace={context.permissions.includes("workspaces.manage")}
+          instances={state.middlewareInstances}
           middleware={state.middleware}
           plugins={state.plugins}
+          runtimeConfig={state.runtimeConfig}
+          settingsHref={`/orgs/${orgSlug}/workspaces/${workspaceSlug}/settings`}
           tools={state.tools}
         />
       </section>

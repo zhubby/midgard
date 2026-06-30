@@ -1,14 +1,17 @@
 import type {
   ApprovalRecord,
   AgentSession,
+  AgentSessionSummary,
   ApprovalResponse,
   AddOrganizationMemberRequest,
   AuthContext,
   AuthUser,
   CreateAuthUserRequest,
+  CreateMiddlewareInstanceRequest,
   CreateOrganizationRequest,
   CreateRbacRoleRequest,
   CreateWorkspaceRequest,
+  MiddlewareInstance,
   OrganizationContext,
   OrganizationMemberView,
   OrganizationMembership,
@@ -19,8 +22,10 @@ import type {
   RunAccepted,
   ToolDefinition,
   UpdateAuthUserRequest,
+  UpdateMiddlewareInstanceRequest,
   UpdateOrganizationMemberRequest,
   UpdateRbacRoleRequest,
+  UpdateWorkspaceRequest,
   Workspace,
 } from "./types";
 
@@ -220,6 +225,25 @@ export function createWorkspace(
   });
 }
 
+export function fetchWorkspace(
+  orgSlug: string,
+  workspaceSlug: string,
+): Promise<Workspace> {
+  return request<Workspace>(`/api/orgs/${orgSlug}/workspaces/${workspaceSlug}`);
+}
+
+export function updateWorkspace(
+  orgSlug: string,
+  workspaceSlug: string,
+  payload: UpdateWorkspaceRequest,
+): Promise<Workspace> {
+  return request<Workspace>(`/api/orgs/${orgSlug}/workspaces/${workspaceSlug}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
 function workspaceApiPath(
   orgSlug: string,
   workspaceSlug: string,
@@ -243,6 +267,55 @@ export function fetchPlugins(
 ): Promise<PluginResponse[]> {
   return request<PluginResponse[]>(
     workspaceApiPath(orgSlug, workspaceSlug, "/plugins"),
+  );
+}
+
+export function fetchSessions(
+  orgSlug: string,
+  workspaceSlug: string,
+): Promise<AgentSessionSummary[]> {
+  return request<AgentSessionSummary[]>(
+    workspaceApiPath(orgSlug, workspaceSlug, "/agent/sessions"),
+  );
+}
+
+export function fetchMiddlewareInstances(
+  orgSlug: string,
+  workspaceSlug: string,
+): Promise<MiddlewareInstance[]> {
+  return request<MiddlewareInstance[]>(
+    workspaceApiPath(orgSlug, workspaceSlug, "/middleware"),
+  );
+}
+
+export function createMiddlewareInstance(
+  orgSlug: string,
+  workspaceSlug: string,
+  payload: CreateMiddlewareInstanceRequest,
+): Promise<MiddlewareInstance> {
+  return request<MiddlewareInstance>(
+    workspaceApiPath(orgSlug, workspaceSlug, "/middleware"),
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
+export function updateMiddlewareInstance(
+  orgSlug: string,
+  workspaceSlug: string,
+  id: string,
+  payload: UpdateMiddlewareInstanceRequest,
+): Promise<MiddlewareInstance> {
+  return request<MiddlewareInstance>(
+    workspaceApiPath(orgSlug, workspaceSlug, `/middleware/${id}`),
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    },
   );
 }
 

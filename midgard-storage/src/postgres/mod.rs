@@ -16,9 +16,11 @@ use crate::{
         AuthUserUpdate, NewAuthAuditEvent, NewAuthSession, NewUser,
     },
     org::{
-        NewOrganization, NewOrganizationMembership, NewWorkspace, Organization,
-        OrganizationContext, OrganizationMembership, OrganizationMembershipUpdate,
-        OrganizationRole, Workspace, WorkspaceUpdate,
+        MiddlewareDesiredState, MiddlewareInstance, MiddlewareInstanceStatus,
+        MiddlewareInstanceUpdate, NewMiddlewareInstance, NewOrganization,
+        NewOrganizationMembership, NewWorkspace, Organization, OrganizationContext,
+        OrganizationMembership, OrganizationMembershipUpdate, OrganizationRole, Workspace,
+        WorkspaceRuntimeConfigStatus, WorkspaceRuntimeConfigView, WorkspaceUpdate,
     },
     rbac::{
         builtin_organization_roles, legacy_organization_role_builtin_key,
@@ -37,8 +39,9 @@ use codec::{
 
 pub use models::{
     storage_models, StoredAgentApprovalRecord, StoredAgentMessage, StoredAgentSession,
-    StoredAuthAuditEvent, StoredAuthSession, StoredAuthUser, StoredOrganization,
-    StoredOrganizationMembership, StoredRbacRole, StoredRbacRolePermission, StoredWorkspace,
+    StoredAuthAuditEvent, StoredAuthSession, StoredAuthUser, StoredMiddlewareInstance,
+    StoredOrganization, StoredOrganizationMembership, StoredRbacRole, StoredRbacRolePermission,
+    StoredWorkspace,
 };
 
 #[derive(Clone)]
@@ -76,7 +79,8 @@ impl AgentSessionStore for PostgresAgentSessionStore {
         workspace_id: Uuid,
         goal: String,
     ) -> MidgardResult<AgentSession> {
-        let session = AgentSession::new(goal);
+        let mut session = AgentSession::new(goal);
+        session.workspace_id = workspace_id_option(workspace_id);
         self.save_session_in_workspace(workspace_id, session).await
     }
 
@@ -96,10 +100,12 @@ impl AgentSessionStore for PostgresAgentSessionStore {
                 }
                 let mut session = AgentSession::new("resumed session");
                 session.id = id;
+                session.workspace_id = workspace_id_option(workspace_id);
                 session
             }
         };
 
+        session.workspace_id = workspace_id_option(workspace_id);
         session.messages.push(AgentMessage::user(message));
         self.save_session_in_workspace(workspace_id, session).await
     }
@@ -118,11 +124,43 @@ impl AgentSessionStore for PostgresAgentSessionStore {
         load_session_with_executor(&mut db, id, Some(workspace_id)).await
     }
 
+    async fn list_sessions_in_workspace(
+        &self,
+        workspace_id: Uuid,
+    ) -> MidgardResult<Vec<AgentSession>> {
+        let mut db = self.db.clone();
+        let rows =
+            sql::query("SELECT id FROM agent_sessions WHERE workspace_id = $1 ORDER BY id ASC")
+                .bind(workspace_id)
+                .column_types([stmt::Type::Uuid])
+                .exec(&mut db)
+                .await
+                .map_err(storage_error)?;
+
+        let mut sessions = Vec::with_capacity(rows.len());
+        for row in rows {
+            let record = row.into_record();
+            if let Some(session) = load_session_with_executor(
+                &mut db,
+                uuid_from_value(&record[0])?,
+                Some(workspace_id),
+            )
+            .await?
+            {
+                sessions.push(session);
+            }
+        }
+
+        Ok(sessions)
+    }
+
     async fn save_session_in_workspace(
         &self,
         workspace_id: Uuid,
         session: AgentSession,
     ) -> MidgardResult<AgentSession> {
+        let mut session = session;
+        session.workspace_id = workspace_id_option(workspace_id);
         let mut db = self.db.clone();
         let mut tx = db.transaction().await.map_err(storage_error)?;
 
@@ -841,11 +879,17 @@ impl OrganizationStore for PostgresAgentSessionStore {
         }
 
         let now = utc_now_rfc3339();
+        let (runtime_config, runtime_config_ciphertext) = match workspace.runtime_config {
+            Some(record) => (record.view, Some(record.ciphertext)),
+            None => (WorkspaceRuntimeConfigView::default(), None),
+        };
+        let runtime_config_summary_json = json_string(&runtime_config)?;
         let created = Workspace {
             id: Uuid::new_v4(),
             organization_id: workspace.organization_id,
             slug,
             name,
+            runtime_config,
             archived_at: None,
             created_at: now.clone(),
             updated_at: now,
@@ -854,13 +898,26 @@ impl OrganizationStore for PostgresAgentSessionStore {
         let mut db = self.db.clone();
         sql::statement(
             "INSERT INTO workspaces
-                (id, organization_id, slug, name, archived_at, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                (id, organization_id, slug, name, runtime_mode, runtime_config_ciphertext,
+                 runtime_config_summary_json, runtime_config_status, runtime_config_updated_at,
+                 archived_at, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
         )
         .bind(created.id)
         .bind(created.organization_id)
         .bind(created.slug.clone())
         .bind(created.name.clone())
+        .bind(
+            created
+                .runtime_config
+                .mode
+                .as_ref()
+                .map(|mode| mode.as_str().to_string()),
+        )
+        .bind(runtime_config_ciphertext)
+        .bind(runtime_config_summary_json)
+        .bind(created.runtime_config.status.as_str())
+        .bind(created.runtime_config.updated_at.clone())
         .bind(created.archived_at.clone())
         .bind(created.created_at.clone())
         .bind(created.updated_at.clone())
@@ -879,7 +936,8 @@ impl OrganizationStore for PostgresAgentSessionStore {
         let slug = normalize_slug(slug)?;
         let mut db = self.db.clone();
         let rows = sql::query(
-            "SELECT id, organization_id, slug, name, archived_at, created_at, updated_at
+            "SELECT id, organization_id, slug, name, runtime_mode, runtime_config_summary_json,
+                    runtime_config_status, runtime_config_updated_at, archived_at, created_at, updated_at
              FROM workspaces
              WHERE organization_id = $1 AND slug = $2 AND archived_at IS NULL",
         )
@@ -896,7 +954,8 @@ impl OrganizationStore for PostgresAgentSessionStore {
     async fn list_workspaces(&self, organization_id: Uuid) -> MidgardResult<Vec<Workspace>> {
         let mut db = self.db.clone();
         let rows = sql::query(
-            "SELECT id, organization_id, slug, name, archived_at, created_at, updated_at
+            "SELECT id, organization_id, slug, name, runtime_mode, runtime_config_summary_json,
+                    runtime_config_status, runtime_config_updated_at, archived_at, created_at, updated_at
              FROM workspaces
              WHERE organization_id = $1 AND archived_at IS NULL
              ORDER BY slug ASC",
@@ -928,17 +987,47 @@ impl OrganizationStore for PostgresAgentSessionStore {
         if let Some(archived) = update.archived {
             workspace.archived_at = archived.then(utc_now_rfc3339);
         }
+        let runtime_config_ciphertext = update
+            .runtime_config
+            .as_ref()
+            .map(|record| record.ciphertext.clone());
+        let runtime_config_summary_json = update
+            .runtime_config
+            .as_ref()
+            .map(|record| json_string(&record.view))
+            .transpose()?;
+        if let Some(runtime_config) = update.runtime_config {
+            workspace.runtime_config = runtime_config.view;
+        }
         workspace.updated_at = utc_now_rfc3339();
 
         let mut db = self.db.clone();
         sql::statement(
             "UPDATE workspaces
-             SET name = $3, archived_at = $4, updated_at = $5
+             SET name = $3,
+                 runtime_mode = $4,
+                 runtime_config_ciphertext = COALESCE($5, runtime_config_ciphertext),
+                 runtime_config_summary_json = COALESCE($6, runtime_config_summary_json),
+                 runtime_config_status = $7,
+                 runtime_config_updated_at = $8,
+                 archived_at = $9,
+                 updated_at = $10
              WHERE organization_id = $1 AND slug = $2",
         )
         .bind(organization_id)
         .bind(workspace.slug.clone())
         .bind(workspace.name.clone())
+        .bind(
+            workspace
+                .runtime_config
+                .mode
+                .as_ref()
+                .map(|mode| mode.as_str().to_string()),
+        )
+        .bind(runtime_config_ciphertext)
+        .bind(runtime_config_summary_json)
+        .bind(workspace.runtime_config.status.as_str())
+        .bind(workspace.runtime_config.updated_at.clone())
         .bind(workspace.archived_at.clone())
         .bind(workspace.updated_at.clone())
         .exec(&mut db)
@@ -946,6 +1035,167 @@ impl OrganizationStore for PostgresAgentSessionStore {
         .map_err(storage_error)?;
 
         Ok(Some(workspace))
+    }
+
+    async fn list_middleware_instances(
+        &self,
+        workspace_id: Uuid,
+    ) -> MidgardResult<Vec<MiddlewareInstance>> {
+        let mut db = self.db.clone();
+        let rows = sql::query(
+            "SELECT id, workspace_id, kind, name, namespace, desired_state, status,
+                    config_json, archived_at, created_at, updated_at
+             FROM middleware_instances
+             WHERE workspace_id = $1 AND archived_at IS NULL
+             ORDER BY namespace ASC, name ASC, id ASC",
+        )
+        .bind(workspace_id)
+        .column_types(middleware_instance_column_types())
+        .exec(&mut db)
+        .await
+        .map_err(storage_error)?;
+
+        rows.into_iter()
+            .map(middleware_instance_from_row)
+            .collect::<MidgardResult<Vec<_>>>()
+    }
+
+    async fn list_middleware_instances_for_reconciliation(
+        &self,
+        workspace_id: Uuid,
+    ) -> MidgardResult<Vec<MiddlewareInstance>> {
+        let mut db = self.db.clone();
+        let rows = sql::query(
+            "SELECT id, workspace_id, kind, name, namespace, desired_state, status,
+                    config_json, archived_at, created_at, updated_at
+             FROM middleware_instances
+             WHERE workspace_id = $1
+             ORDER BY namespace ASC, name ASC, id ASC",
+        )
+        .bind(workspace_id)
+        .column_types(middleware_instance_column_types())
+        .exec(&mut db)
+        .await
+        .map_err(storage_error)?;
+
+        rows.into_iter()
+            .map(middleware_instance_from_row)
+            .collect::<MidgardResult<Vec<_>>>()
+    }
+
+    async fn create_middleware_instance(
+        &self,
+        instance: NewMiddlewareInstance,
+    ) -> MidgardResult<MiddlewareInstance> {
+        let kind = required_name(&instance.kind, "middleware kind")?;
+        let name = required_name(&instance.name, "middleware name")?;
+        let namespace = required_name(&instance.namespace, "middleware namespace")?;
+        if self
+            .list_middleware_instances(instance.workspace_id)
+            .await?
+            .iter()
+            .any(|current| current.namespace == namespace && current.name == name)
+        {
+            return Err(MidgardError::Storage(format!(
+                "middleware instance already exists: {namespace}/{name}"
+            )));
+        }
+
+        let now = utc_now_rfc3339();
+        let created = MiddlewareInstance {
+            id: Uuid::new_v4(),
+            workspace_id: instance.workspace_id,
+            kind,
+            name,
+            namespace,
+            desired_state: instance.desired_state,
+            status: instance.status,
+            config: instance.config,
+            archived_at: None,
+            created_at: now.clone(),
+            updated_at: now,
+        };
+
+        let mut db = self.db.clone();
+        sql::statement(
+            "INSERT INTO middleware_instances
+                (id, workspace_id, kind, name, namespace, desired_state, status,
+                 config_json, archived_at, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+        )
+        .bind(created.id)
+        .bind(created.workspace_id)
+        .bind(created.kind.clone())
+        .bind(created.name.clone())
+        .bind(created.namespace.clone())
+        .bind(created.desired_state.as_str())
+        .bind(created.status.as_str())
+        .bind(json_string(&created.config)?)
+        .bind(created.archived_at.clone())
+        .bind(created.created_at.clone())
+        .bind(created.updated_at.clone())
+        .exec(&mut db)
+        .await
+        .map_err(storage_error)?;
+
+        Ok(created)
+    }
+
+    async fn update_middleware_instance(
+        &self,
+        workspace_id: Uuid,
+        id: Uuid,
+        update: MiddlewareInstanceUpdate,
+    ) -> MidgardResult<Option<MiddlewareInstance>> {
+        let mut db = self.db.clone();
+        let rows = sql::query(
+            "SELECT id, workspace_id, kind, name, namespace, desired_state, status,
+                    config_json, archived_at, created_at, updated_at
+             FROM middleware_instances
+             WHERE workspace_id = $1 AND id = $2",
+        )
+        .bind(workspace_id)
+        .bind(id)
+        .column_types(middleware_instance_column_types())
+        .exec(&mut db)
+        .await
+        .map_err(storage_error)?;
+        let Some(row) = rows.into_iter().next() else {
+            return Ok(None);
+        };
+        let mut instance = middleware_instance_from_row(row)?;
+
+        if let Some(desired_state) = update.desired_state {
+            instance.desired_state = desired_state;
+        }
+        if let Some(status) = update.status {
+            instance.status = status;
+        }
+        if let Some(config) = update.config {
+            instance.config = config;
+        }
+        if let Some(archived) = update.archived {
+            instance.archived_at = archived.then(utc_now_rfc3339);
+        }
+        instance.updated_at = utc_now_rfc3339();
+
+        sql::statement(
+            "UPDATE middleware_instances
+             SET desired_state = $3, status = $4, config_json = $5, archived_at = $6, updated_at = $7
+             WHERE workspace_id = $1 AND id = $2",
+        )
+        .bind(workspace_id)
+        .bind(id)
+        .bind(instance.desired_state.as_str())
+        .bind(instance.status.as_str())
+        .bind(json_string(&instance.config)?)
+        .bind(instance.archived_at.clone())
+        .bind(instance.updated_at.clone())
+        .exec(&mut db)
+        .await
+        .map_err(storage_error)?;
+
+        Ok(Some(instance))
     }
 
     async fn list_organization_roles(&self, organization_id: Uuid) -> MidgardResult<Vec<RbacRole>> {
@@ -1090,10 +1340,14 @@ fn membership_column_types() -> [stmt::Type; 9] {
     ]
 }
 
-fn workspace_column_types() -> [stmt::Type; 7] {
+fn workspace_column_types() -> [stmt::Type; 11] {
     [
         stmt::Type::Uuid,
         stmt::Type::Uuid,
+        stmt::Type::String,
+        stmt::Type::String,
+        stmt::Type::String,
+        stmt::Type::String,
         stmt::Type::String,
         stmt::Type::String,
         stmt::Type::String,
@@ -1165,14 +1419,70 @@ fn workspace_from_row(row: stmt::Value) -> MidgardResult<Workspace> {
 }
 
 fn workspace_from_record(record: &[stmt::Value]) -> MidgardResult<Workspace> {
+    let mut runtime_config = match optional_string_from_value(&record[5])? {
+        Some(summary_json) => serde_json::from_str::<WorkspaceRuntimeConfigView>(&summary_json)
+            .map_err(|err| {
+                MidgardError::Storage(format!(
+                    "invalid workspace runtime config summary JSON: {err}"
+                ))
+            })?,
+        None => WorkspaceRuntimeConfigView::default(),
+    };
+    runtime_config.mode = optional_string_from_value(&record[4])?
+        .as_deref()
+        .map(crate::org::WorkspaceRuntimeMode::from_storage)
+        .transpose()?;
+    runtime_config.status =
+        WorkspaceRuntimeConfigStatus::from_storage(string_from_value(&record[6])?)?;
+    runtime_config.updated_at = optional_string_from_value(&record[7])?;
+
     Ok(Workspace {
         id: uuid_from_value(&record[0])?,
         organization_id: uuid_from_value(&record[1])?,
         slug: string_from_value(&record[2])?.to_string(),
         name: string_from_value(&record[3])?.to_string(),
-        archived_at: optional_string_from_value(&record[4])?,
-        created_at: string_from_value(&record[5])?.to_string(),
-        updated_at: string_from_value(&record[6])?.to_string(),
+        runtime_config,
+        archived_at: optional_string_from_value(&record[8])?,
+        created_at: string_from_value(&record[9])?.to_string(),
+        updated_at: string_from_value(&record[10])?.to_string(),
+    })
+}
+
+fn middleware_instance_column_types() -> [stmt::Type; 11] {
+    [
+        stmt::Type::Uuid,
+        stmt::Type::Uuid,
+        stmt::Type::String,
+        stmt::Type::String,
+        stmt::Type::String,
+        stmt::Type::String,
+        stmt::Type::String,
+        stmt::Type::String,
+        stmt::Type::String,
+        stmt::Type::String,
+        stmt::Type::String,
+    ]
+}
+
+fn middleware_instance_from_row(row: stmt::Value) -> MidgardResult<MiddlewareInstance> {
+    let record = row.into_record();
+    let config_json = string_from_value(&record[7])?;
+    let config = serde_json::from_str(config_json).map_err(|err| {
+        MidgardError::Storage(format!("invalid middleware instance config JSON: {err}"))
+    })?;
+
+    Ok(MiddlewareInstance {
+        id: uuid_from_value(&record[0])?,
+        workspace_id: uuid_from_value(&record[1])?,
+        kind: string_from_value(&record[2])?.to_string(),
+        name: string_from_value(&record[3])?.to_string(),
+        namespace: string_from_value(&record[4])?.to_string(),
+        desired_state: MiddlewareDesiredState::from_storage(string_from_value(&record[5])?)?,
+        status: MiddlewareInstanceStatus::from_storage(string_from_value(&record[6])?)?,
+        config,
+        archived_at: optional_string_from_value(&record[8])?,
+        created_at: string_from_value(&record[9])?.to_string(),
+        updated_at: string_from_value(&record[10])?.to_string(),
     })
 }
 
@@ -1772,6 +2082,10 @@ fn required_name(name: &str, label: &str) -> MidgardResult<String> {
     Ok(name.to_string())
 }
 
+fn workspace_id_option(workspace_id: Uuid) -> Option<Uuid> {
+    (workspace_id != Uuid::nil()).then_some(workspace_id)
+}
+
 async fn upsert_session(
     executor: &mut dyn Executor,
     workspace_id: Uuid,
@@ -1880,12 +2194,13 @@ async fn load_session_with_executor(
 ) -> MidgardResult<Option<AgentSession>> {
     let session_rows = match workspace_id {
         Some(workspace_id) => sql::query(
-            "SELECT id, iteration_count, status, pending_approval_json, last_error
+            "SELECT id, workspace_id, iteration_count, status, pending_approval_json, last_error
                  FROM agent_sessions WHERE id = $1 AND workspace_id = $2",
         )
         .bind(id)
         .bind(workspace_id)
         .column_types([
+            stmt::Type::Uuid,
             stmt::Type::Uuid,
             stmt::Type::I64,
             stmt::Type::String,
@@ -1896,11 +2211,12 @@ async fn load_session_with_executor(
         .await
         .map_err(storage_error)?,
         None => sql::query(
-            "SELECT id, iteration_count, status, pending_approval_json, last_error
+            "SELECT id, workspace_id, iteration_count, status, pending_approval_json, last_error
                  FROM agent_sessions WHERE id = $1",
         )
         .bind(id)
         .column_types([
+            stmt::Type::Uuid,
             stmt::Type::Uuid,
             stmt::Type::I64,
             stmt::Type::String,
@@ -1917,10 +2233,11 @@ async fn load_session_with_executor(
     };
     let session_record = session_row.into_record();
     let id = uuid_from_value(&session_record[0])?;
-    let iteration_count = i64_from_value(&session_record[1])? as usize;
-    let status = status_from_storage(string_from_value(&session_record[2])?)?;
-    let pending_approval = optional_pending_approval(&session_record[3])?;
-    let last_error = optional_string_from_value(&session_record[4])?;
+    let stored_workspace_id = uuid_from_value(&session_record[1])?;
+    let iteration_count = i64_from_value(&session_record[2])? as usize;
+    let status = status_from_storage(string_from_value(&session_record[3])?)?;
+    let pending_approval = optional_pending_approval(&session_record[4])?;
+    let last_error = optional_string_from_value(&session_record[5])?;
 
     let message_rows = sql::query(
         "SELECT role, content, tool_calls_json, tool_call_id
@@ -1944,6 +2261,7 @@ async fn load_session_with_executor(
 
     Ok(Some(AgentSession {
         id,
+        workspace_id: workspace_id_option(stored_workspace_id),
         messages,
         iteration_count,
         status,

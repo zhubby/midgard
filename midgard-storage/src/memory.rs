@@ -15,9 +15,9 @@ use crate::{
         AuthUserUpdate, NewAuthAuditEvent, NewAuthSession, NewUser,
     },
     org::{
-        NewOrganization, NewOrganizationMembership, NewWorkspace, Organization,
-        OrganizationContext, OrganizationMembership, OrganizationMembershipUpdate, Workspace,
-        WorkspaceUpdate,
+        MiddlewareInstance, MiddlewareInstanceUpdate, NewMiddlewareInstance, NewOrganization,
+        NewOrganizationMembership, NewWorkspace, Organization, OrganizationContext,
+        OrganizationMembership, OrganizationMembershipUpdate, Workspace, WorkspaceUpdate,
     },
     rbac::{
         builtin_organization_roles, builtin_system_roles, legacy_organization_role_builtin_key,
@@ -70,6 +70,7 @@ pub struct MemoryOrganizationStore {
     organizations: Mutex<BTreeMap<Uuid, Organization>>,
     memberships: Mutex<BTreeMap<Uuid, OrganizationMembership>>,
     workspaces: Mutex<BTreeMap<Uuid, Workspace>>,
+    middleware_instances: Mutex<BTreeMap<Uuid, MiddlewareInstance>>,
     roles: Mutex<BTreeMap<Uuid, RbacRole>>,
 }
 
@@ -79,6 +80,7 @@ impl MemoryOrganizationStore {
             organizations: Mutex::new(BTreeMap::new()),
             memberships: Mutex::new(BTreeMap::new()),
             workspaces: Mutex::new(BTreeMap::new()),
+            middleware_instances: Mutex::new(BTreeMap::new()),
             roles: Mutex::new(BTreeMap::new()),
         }
     }
@@ -291,7 +293,8 @@ impl AgentSessionStore for MemoryAgentSessionStore {
         workspace_id: Uuid,
         goal: String,
     ) -> MidgardResult<AgentSession> {
-        let session = AgentSession::new(goal);
+        let mut session = AgentSession::new(goal);
+        session.workspace_id = workspace_id_option(workspace_id);
         self.sessions
             .lock()
             .map_err(|_| MidgardError::Storage("session store poisoned".to_string()))?
@@ -326,9 +329,11 @@ impl AgentSessionStore for MemoryAgentSessionStore {
         let session = sessions.entry(id).or_insert_with(|| {
             let mut session = AgentSession::new("resumed session");
             session.id = id;
+            session.workspace_id = workspace_id_option(workspace_id);
             session
         });
         session_workspaces.entry(id).or_insert(workspace_id);
+        session.workspace_id = workspace_id_option(workspace_id);
 
         session.messages.push(AgentMessage::user(message));
 
@@ -359,7 +364,41 @@ impl AgentSessionStore for MemoryAgentSessionStore {
             return Ok(None);
         }
 
-        self.load_session(id).await
+        Ok(self.load_session(id).await?.map(|mut session| {
+            session.workspace_id = workspace_id_option(workspace_id);
+            session
+        }))
+    }
+
+    async fn list_sessions_in_workspace(
+        &self,
+        workspace_id: Uuid,
+    ) -> MidgardResult<Vec<AgentSession>> {
+        let session_ids = self
+            .session_workspaces
+            .lock()
+            .map_err(|_| MidgardError::Storage("session workspace store poisoned".to_string()))?
+            .iter()
+            .filter_map(|(session_id, current_workspace_id)| {
+                (*current_workspace_id == workspace_id).then_some(*session_id)
+            })
+            .collect::<BTreeSet<_>>();
+        let mut sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| MidgardError::Storage("session store poisoned".to_string()))?
+            .iter()
+            .filter_map(|(id, session)| {
+                if !session_ids.contains(id) {
+                    return None;
+                }
+                let mut session = session.clone();
+                session.workspace_id = workspace_id_option(workspace_id);
+                Some(session)
+            })
+            .collect::<Vec<_>>();
+        sessions.sort_by_key(|session| session.id);
+        Ok(sessions)
     }
 
     async fn save_session_in_workspace(
@@ -367,6 +406,8 @@ impl AgentSessionStore for MemoryAgentSessionStore {
         workspace_id: Uuid,
         session: AgentSession,
     ) -> MidgardResult<AgentSession> {
+        let mut session = session;
+        session.workspace_id = workspace_id_option(workspace_id);
         self.upsert_pending_approval_record(&session)?;
         self.sessions
             .lock()
@@ -1097,6 +1138,10 @@ impl OrganizationStore for MemoryOrganizationStore {
             organization_id: workspace.organization_id,
             slug,
             name,
+            runtime_config: workspace
+                .runtime_config
+                .map(|record| record.view)
+                .unwrap_or_default(),
             archived_at: None,
             created_at: now.clone(),
             updated_at: now,
@@ -1163,9 +1208,130 @@ impl OrganizationStore for MemoryOrganizationStore {
         if let Some(archived) = update.archived {
             workspace.archived_at = archived.then(utc_now_rfc3339);
         }
+        if let Some(runtime_config) = update.runtime_config {
+            workspace.runtime_config = runtime_config.view;
+        }
         workspace.updated_at = utc_now_rfc3339();
 
         Ok(Some(workspace.clone()))
+    }
+
+    async fn list_middleware_instances(
+        &self,
+        workspace_id: Uuid,
+    ) -> MidgardResult<Vec<MiddlewareInstance>> {
+        let mut instances = self
+            .middleware_instances
+            .lock()
+            .map_err(|_| MidgardError::Storage("middleware store poisoned".to_string()))?
+            .values()
+            .filter(|instance| {
+                instance.workspace_id == workspace_id && instance.archived_at.is_none()
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        instances.sort_by(|left, right| {
+            left.namespace
+                .cmp(&right.namespace)
+                .then(left.name.cmp(&right.name))
+                .then(left.id.cmp(&right.id))
+        });
+        Ok(instances)
+    }
+
+    async fn list_middleware_instances_for_reconciliation(
+        &self,
+        workspace_id: Uuid,
+    ) -> MidgardResult<Vec<MiddlewareInstance>> {
+        let mut instances = self
+            .middleware_instances
+            .lock()
+            .map_err(|_| MidgardError::Storage("middleware store poisoned".to_string()))?
+            .values()
+            .filter(|instance| instance.workspace_id == workspace_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        instances.sort_by(|left, right| {
+            left.namespace
+                .cmp(&right.namespace)
+                .then(left.name.cmp(&right.name))
+                .then(left.id.cmp(&right.id))
+        });
+        Ok(instances)
+    }
+
+    async fn create_middleware_instance(
+        &self,
+        instance: NewMiddlewareInstance,
+    ) -> MidgardResult<MiddlewareInstance> {
+        let kind = required_name(&instance.kind, "middleware kind")?;
+        let name = required_name(&instance.name, "middleware name")?;
+        let namespace = required_name(&instance.namespace, "middleware namespace")?;
+        let mut instances = self
+            .middleware_instances
+            .lock()
+            .map_err(|_| MidgardError::Storage("middleware store poisoned".to_string()))?;
+        if instances.values().any(|current| {
+            current.workspace_id == instance.workspace_id
+                && current.archived_at.is_none()
+                && current.namespace == namespace
+                && current.name == name
+        }) {
+            return Err(MidgardError::Storage(format!(
+                "middleware instance already exists: {namespace}/{name}"
+            )));
+        }
+
+        let now = utc_now_rfc3339();
+        let created = MiddlewareInstance {
+            id: Uuid::new_v4(),
+            workspace_id: instance.workspace_id,
+            kind,
+            name,
+            namespace,
+            desired_state: instance.desired_state,
+            status: instance.status,
+            config: instance.config,
+            archived_at: None,
+            created_at: now.clone(),
+            updated_at: now,
+        };
+        instances.insert(created.id, created.clone());
+        Ok(created)
+    }
+
+    async fn update_middleware_instance(
+        &self,
+        workspace_id: Uuid,
+        id: Uuid,
+        update: MiddlewareInstanceUpdate,
+    ) -> MidgardResult<Option<MiddlewareInstance>> {
+        let mut instances = self
+            .middleware_instances
+            .lock()
+            .map_err(|_| MidgardError::Storage("middleware store poisoned".to_string()))?;
+        let Some(instance) = instances
+            .get_mut(&id)
+            .filter(|instance| instance.workspace_id == workspace_id)
+        else {
+            return Ok(None);
+        };
+
+        if let Some(desired_state) = update.desired_state {
+            instance.desired_state = desired_state;
+        }
+        if let Some(status) = update.status {
+            instance.status = status;
+        }
+        if let Some(config) = update.config {
+            instance.config = config;
+        }
+        if let Some(archived) = update.archived {
+            instance.archived_at = archived.then(utc_now_rfc3339);
+        }
+        instance.updated_at = utc_now_rfc3339();
+
+        Ok(Some(instance.clone()))
     }
 
     async fn list_organization_roles(&self, organization_id: Uuid) -> MidgardResult<Vec<RbacRole>> {
@@ -1343,6 +1509,10 @@ fn required_name(name: &str, label: &str) -> MidgardResult<String> {
     }
 
     Ok(name.to_string())
+}
+
+fn workspace_id_option(workspace_id: Uuid) -> Option<Uuid> {
+    (workspace_id != Uuid::nil()).then_some(workspace_id)
 }
 
 fn sorted_permissions(permissions: Vec<PermissionKey>) -> Vec<PermissionKey> {
@@ -1657,6 +1827,7 @@ mod tests {
                 organization_id: organization.id,
                 slug: "operations".to_string(),
                 name: "Operations".to_string(),
+                runtime_config: None,
             })
             .await
             .unwrap();

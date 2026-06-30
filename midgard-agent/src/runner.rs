@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use futures_util::StreamExt;
 use midgard_core::MidgardResult;
-use midgard_tools::{ToolRegistry, ToolResult};
+use midgard_tools::{ToolCallContext, ToolRegistry, ToolResult};
 
 use crate::{
     AgentMessage, AgentRunEvent, AgentRunStatus, AgentSession, AgentToolCall, LlmProvider,
@@ -270,7 +270,7 @@ impl AgentRunner {
                 Ok(false)
             }
             Some(true) => {
-                let result = self.execute_tool_call(&approval.tool_call).await;
+                let result = self.execute_tool_call(session, &approval.tool_call).await;
                 let should_stop = !result.should_continue;
                 self.record_tool_result(
                     session,
@@ -336,7 +336,7 @@ impl AgentRunner {
             return Ok(true);
         }
 
-        let result = self.execute_tool_call(&tool_call).await;
+        let result = self.execute_tool_call(session, &tool_call).await;
         let should_stop = !result.should_continue;
         self.record_tool_result(
             session,
@@ -354,7 +354,11 @@ impl AgentRunner {
         Ok(should_stop)
     }
 
-    async fn execute_tool_call(&self, tool_call: &AgentToolCall) -> ToolResult {
+    async fn execute_tool_call(
+        &self,
+        session: &AgentSession,
+        tool_call: &AgentToolCall,
+    ) -> ToolResult {
         if !tool_call.arguments.is_object() {
             return ToolResult::error(format!(
                 "invalid arguments for {}: expected JSON object, got {}",
@@ -364,7 +368,13 @@ impl AgentRunner {
 
         match self
             .tools
-            .call(&tool_call.name, tool_call.arguments.clone())
+            .call_with_context(
+                &tool_call.name,
+                tool_call.arguments.clone(),
+                ToolCallContext {
+                    workspace_id: session.workspace_id.map(|id| id.to_string()),
+                },
+            )
             .await
         {
             Ok(result) => result,

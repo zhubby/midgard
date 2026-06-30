@@ -72,10 +72,19 @@ impl ToolResult {
     }
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ToolCallContext {
+    pub workspace_id: Option<String>,
+}
+
 #[async_trait]
 pub trait Tool: Send + Sync {
     fn definition(&self) -> ToolDefinition;
     async fn call(&self, arguments: Value) -> ToolResult;
+
+    async fn call_with_context(&self, arguments: Value, _context: ToolCallContext) -> ToolResult {
+        self.call(arguments).await
+    }
 }
 
 #[derive(Default)]
@@ -101,11 +110,21 @@ impl ToolRegistry {
     }
 
     pub async fn call(&self, name: &str, arguments: Value) -> MidgardResult<ToolResult> {
+        self.call_with_context(name, arguments, ToolCallContext::default())
+            .await
+    }
+
+    pub async fn call_with_context(
+        &self,
+        name: &str,
+        arguments: Value,
+        context: ToolCallContext,
+    ) -> MidgardResult<ToolResult> {
         let tool = self
             .tools
             .get(name)
             .ok_or_else(|| MidgardError::Tool(format!("tool not found: {name}")))?;
 
-        Ok(tool.call(arguments).await)
+        Ok(tool.call_with_context(arguments, context).await)
     }
 }

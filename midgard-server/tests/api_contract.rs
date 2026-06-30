@@ -7,7 +7,9 @@ use axum::{
     Router,
 };
 use midgard_agent::{AgentToolCall, LlmProvider, LlmResponse, ScriptedLlmProvider};
-use midgard_server::{app, app_with_provider_auth_and_orgs, AuthSettings};
+use midgard_server::{
+    app, app_with_provider_auth_orgs_and_credentials, AuthSettings, WorkspaceCredentialSettings,
+};
 use midgard_storage::{
     hash_password, AuthStore, MemoryAgentSessionStore, MemoryAuthStore, MemoryOrganizationStore,
     NewOrganization, NewOrganizationMembership, NewUser, NewWorkspace, OrganizationRole,
@@ -71,16 +73,18 @@ async fn app_with_role_and_provider(
         organization_id: organization.id,
         slug: TEST_WORKSPACE.to_string(),
         name: "Operations".to_string(),
+        runtime_config: None,
     })
     .await
     .unwrap();
 
-    let app = app_with_provider_auth_and_orgs(
+    let app = app_with_provider_auth_orgs_and_credentials(
         Arc::new(MemoryAgentSessionStore::new()),
         auth.clone(),
         orgs,
         provider,
         AuthSettings::default(),
+        WorkspaceCredentialSettings::new(Some("test workspace credential key".to_string())),
     );
     let cookie = login_cookie(&app, TEST_EMAIL, TEST_PASSWORD).await;
 
@@ -195,12 +199,13 @@ async fn login_rejects_bad_password_without_cookie() {
     })
     .await
     .unwrap();
-    let app = app_with_provider_auth_and_orgs(
+    let app = app_with_provider_auth_orgs_and_credentials(
         Arc::new(MemoryAgentSessionStore::new()),
         auth,
         Arc::new(MemoryOrganizationStore::new()),
         Arc::new(ScriptedLlmProvider::single(LlmResponse::text("ok"))),
         AuthSettings::default(),
+        WorkspaceCredentialSettings::default(),
     );
 
     let response = app
@@ -299,12 +304,13 @@ async fn user_without_organizations_can_create_first_organization() {
     })
     .await
     .unwrap();
-    let app = app_with_provider_auth_and_orgs(
+    let app = app_with_provider_auth_orgs_and_credentials(
         Arc::new(MemoryAgentSessionStore::new()),
         auth,
         Arc::new(MemoryOrganizationStore::new()),
         Arc::new(ScriptedLlmProvider::single(LlmResponse::text("ok"))),
         AuthSettings::default(),
+        WorkspaceCredentialSettings::new(Some("test workspace credential key".to_string())),
     );
     let cookie = login_cookie(&app, TEST_EMAIL, TEST_PASSWORD).await;
 
@@ -331,7 +337,9 @@ async fn user_without_organizations_can_create_first_organization() {
                 .uri("/api/orgs")
                 .header(COOKIE, cookie)
                 .header("content-type", "application/json")
-                .body(Body::from(r#"{"name":"Platform Ops"}"#))
+                .body(Body::from(
+                    r#"{"name":"Platform Ops","workspace_runtime_config":{"mode":"docker","docker_api_url":"https://docker.example.com:2376"}}"#,
+                ))
                 .unwrap(),
         )
         .await
@@ -385,7 +393,9 @@ async fn agent_sessions_are_isolated_by_workspace() {
                 .uri(format!("/api/orgs/{TEST_ORG}/workspaces"))
                 .header(COOKIE, cookie.clone())
                 .header("content-type", "application/json")
-                .body(Body::from(r#"{"name":"Secondary"}"#))
+                .body(Body::from(
+                    r#"{"name":"Secondary","runtime_config":{"mode":"kubernetes","kubeconfig":"apiVersion: v1\nkind: Config\ncurrent-context: test\ncontexts:\n- name: test\n  context:\n    cluster: test\nclusters:\n- name: test\n  cluster:\n    server: https://kubernetes.example.com"}}"#,
+                ))
                 .unwrap(),
         )
         .await
@@ -424,6 +434,175 @@ async fn agent_sessions_are_isolated_by_workspace() {
         .unwrap();
 
     assert_eq!(cross_workspace.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn workspace_creation_requires_runtime_config() {
+    let (app, cookie, _) = app_with_role(UserRole::Admin).await;
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/orgs/{TEST_ORG}/workspaces"))
+                .header(COOKIE, cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"name":"Missing Runtime"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn workspace_runtime_response_is_redacted() {
+    let (app, cookie, _) = app_with_role(UserRole::Admin).await;
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/orgs/{TEST_ORG}/workspaces"))
+                .header(COOKIE, cookie.clone())
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"name":"Docker Runtime","runtime_config":{"mode":"docker","docker_api_url":"https://secret-docker.example.com:2376"}}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let workspace: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(workspace["runtime_config"]["mode"], "docker");
+    assert_eq!(
+        workspace["runtime_config"]["docker"]["endpoint_host"],
+        "secret-docker.example.com"
+    );
+    assert!(workspace.get("runtime_config_ciphertext").is_none());
+    assert!(!String::from_utf8_lossy(&body).contains("https://secret-docker.example.com:2376"));
+
+    let fetched = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/orgs/{TEST_ORG}/workspaces/docker-runtime"))
+                .header(COOKIE, cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(fetched.status(), StatusCode::OK);
+    let fetched_body = to_bytes(fetched.into_body(), usize::MAX).await.unwrap();
+    assert!(
+        !String::from_utf8_lossy(&fetched_body).contains("https://secret-docker.example.com:2376")
+    );
+}
+
+#[tokio::test]
+async fn middleware_instances_require_configured_workspace_and_manage_permission() {
+    let (viewer_app, viewer_cookie, _) = app_with_role(UserRole::Viewer).await;
+    let viewer_response = viewer_app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(workspace_uri("/middleware"))
+                .header(COOKIE, viewer_cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"kind":"redis","name":"cache"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(viewer_response.status(), StatusCode::FORBIDDEN);
+
+    let (app, cookie, _) = app_with_role(UserRole::Admin).await;
+    let unconfigured_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(workspace_uri("/middleware"))
+                .header(COOKIE, cookie.clone())
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"kind":"redis","name":"cache"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unconfigured_response.status(), StatusCode::BAD_REQUEST);
+
+    let configure = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(workspace_uri(""))
+                .header(COOKIE, cookie.clone())
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"runtime_config":{"mode":"docker","docker_api_url":"https://docker.example.com:2376"}}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(configure.status(), StatusCode::OK);
+
+    let created = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(workspace_uri("/middleware"))
+                .header(COOKIE, cookie.clone())
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"kind":"redis","name":"cache","namespace":"data","config":{"memory":"512Mi"}}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let body = to_bytes(created.into_body(), usize::MAX).await.unwrap();
+    let instance: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(instance["status"], "pending");
+    let id = instance["id"].as_str().unwrap();
+
+    let updated = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(workspace_uri(&format!("/middleware/{id}")))
+                .header(COOKIE, cookie.clone())
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"status":"running"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(updated.status(), StatusCode::OK);
+
+    let list = app
+        .oneshot(
+            Request::builder()
+                .uri(workspace_uri("/middleware"))
+                .header(COOKIE, cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = to_bytes(list.into_body(), usize::MAX).await.unwrap();
+    let instances: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(instances.as_array().unwrap().len(), 1);
+    assert_eq!(instances[0]["status"], "running");
 }
 
 #[tokio::test]
@@ -649,6 +828,19 @@ async fn tools_endpoint_lists_registered_tools() {
         .unwrap()
         .iter()
         .any(|tool| tool["name"] == "redis_describe"));
+    let tools = json.as_array().unwrap();
+    let create_tool = tools
+        .iter()
+        .find(|tool| tool["name"] == "middleware_create")
+        .unwrap();
+    assert_eq!(create_tool["risk_level"], "high");
+    assert_eq!(create_tool["requires_approval"], true);
+    let delete_tool = tools
+        .iter()
+        .find(|tool| tool["name"] == "middleware_delete")
+        .unwrap();
+    assert_eq!(delete_tool["risk_level"], "critical");
+    assert_eq!(delete_tool["requires_approval"], true);
 }
 
 #[tokio::test]
@@ -728,15 +920,17 @@ async fn app_accepts_injected_session_store() {
         organization_id: organization.id,
         slug: TEST_WORKSPACE.to_string(),
         name: "Operations".to_string(),
+        runtime_config: None,
     })
     .await
     .unwrap();
-    let app = app_with_provider_auth_and_orgs(
+    let app = app_with_provider_auth_orgs_and_credentials(
         Arc::new(MemoryAgentSessionStore::new()),
         auth,
         orgs,
         Arc::new(ScriptedLlmProvider::single(LlmResponse::text("ok"))),
         AuthSettings::default(),
+        WorkspaceCredentialSettings::default(),
     );
     let cookie = login_cookie(&app, TEST_EMAIL, TEST_PASSWORD).await;
 
