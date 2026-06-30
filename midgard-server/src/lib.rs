@@ -1241,6 +1241,13 @@ fn workspace_tool_registry(state: &AppState, workspace: &Workspace) -> Arc<ToolR
         let controller = state.docker_plugin.controller();
         controller.register_tools(&mut registry);
     }
+    if workspace_uses_kubernetes_runtime(workspace) {
+        operator::register_protocol_capability_tools(
+            &mut registry,
+            state.orgs.clone(),
+            state.operator_registry.clone(),
+        );
+    }
 
     Arc::new(registry)
 }
@@ -1259,6 +1266,14 @@ fn workspace_uses_docker_runtime(workspace: &Workspace) -> bool {
         && matches!(
             &workspace.runtime_config.mode,
             Some(WorkspaceRuntimeMode::Docker)
+        )
+}
+
+fn workspace_uses_kubernetes_runtime(workspace: &Workspace) -> bool {
+    workspace.runtime_config.status == WorkspaceRuntimeConfigStatus::Configured
+        && matches!(
+            &workspace.runtime_config.mode,
+            Some(WorkspaceRuntimeMode::Kubernetes)
         )
 }
 

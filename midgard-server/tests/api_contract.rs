@@ -912,6 +912,12 @@ async fn tools_endpoint_filters_docker_tools_by_runtime() {
             .iter()
             .any(|tool| tool["name"].as_str().unwrap().starts_with("docker_"))
     );
+    assert!(!tools.iter().any(|tool| {
+        tool["name"]
+            .as_str()
+            .unwrap()
+            .starts_with("operator_capability_")
+    }));
     let create_tool = tools
         .iter()
         .find(|tool| tool["name"] == "middleware_create")
@@ -964,6 +970,12 @@ async fn tools_endpoint_filters_docker_tools_by_runtime() {
         .unwrap();
     assert_eq!(docker_prune["risk_level"], "critical");
     assert_eq!(docker_prune["requires_approval"], true);
+    assert!(!tools.iter().any(|tool| {
+        tool["name"]
+            .as_str()
+            .unwrap()
+            .starts_with("operator_capability_")
+    }));
 
     let kubernetes_slug = create_kubernetes_workspace(&app, &cookie).await;
     let response = app
@@ -984,6 +996,25 @@ async fn tools_endpoint_filters_docker_tools_by_runtime() {
             .unwrap()
             .iter()
             .any(|tool| tool["name"].as_str().unwrap().starts_with("docker_"))
+    );
+    let tools = json.as_array().unwrap();
+    let capability_list = tools
+        .iter()
+        .find(|tool| tool["name"] == "operator_capability_list")
+        .unwrap();
+    assert_eq!(capability_list["risk_level"], "low");
+    assert_eq!(capability_list["requires_approval"], false);
+    let capability_execute = tools
+        .iter()
+        .find(|tool| tool["name"] == "operator_capability_execute")
+        .unwrap();
+    assert_eq!(capability_execute["risk_level"], "critical");
+    assert_eq!(capability_execute["requires_approval"], true);
+    assert!(
+        !capability_execute["parameters_schema"]["properties"]
+            .as_object()
+            .unwrap()
+            .contains_key("workspace_id")
     );
 }
 
@@ -1263,6 +1294,65 @@ async fn agent_run_passes_docker_workspace_tools_to_llm() {
 }
 
 #[tokio::test]
+async fn agent_run_passes_kubernetes_protocol_tools_to_llm() {
+    let provider = Arc::new(CapturingLlmProvider::default());
+    let (app, cookie, _) = app_with_role_and_provider(UserRole::Admin, provider.clone()).await;
+    let kubernetes_slug = create_kubernetes_workspace(&app, &cookie).await;
+
+    let create_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(workspace_slug_uri(&kubernetes_slug, "/agent/sessions"))
+                .header(COOKIE, cookie.clone())
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"goal":"inspect kubernetes operators"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create_response.status(), StatusCode::OK);
+    let body = to_bytes(create_response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let created: Value = serde_json::from_slice(&body).unwrap();
+    let id = created["id"].as_str().unwrap();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(workspace_slug_uri(
+                    &kubernetes_slug,
+                    &format!("/agent/sessions/{id}/runs"),
+                ))
+                .header(COOKIE, cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+
+    sleep(Duration::from_millis(20)).await;
+    let captured = provider.captured_tool_names();
+    assert!(!captured.is_empty());
+    assert!(captured[0].iter().any(|name| name == "complete_task"));
+    assert!(
+        captured[0]
+            .iter()
+            .any(|name| name == "operator_capability_list")
+    );
+    assert!(
+        captured[0]
+            .iter()
+            .any(|name| name == "operator_capability_execute")
+    );
+    assert!(!captured[0].iter().any(|name| name == "docker_info"));
+}
+
+#[tokio::test]
 async fn stream_endpoint_emits_ordered_sse_run_events() {
     let (app, cookie, _) = app_with_role_and_provider(
         UserRole::Operator,
@@ -1316,14 +1406,16 @@ async fn workspace_events_endpoint_emits_connected_snapshot() {
     assert!(text.contains("\"current_permissions\""));
     assert!(text.contains("event: middleware_snapshot"));
     assert!(!text.contains("docker_info"));
+    assert!(!text.contains("operator_capability_execute"));
     assert!(!text.contains("midgard-docker"));
 
     configure_default_workspace_for_docker(&app, &cookie).await;
     let response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .uri(workspace_uri("/events?once=true"))
-                .header(COOKIE, cookie)
+                .header(COOKIE, cookie.clone())
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1334,6 +1426,25 @@ async fn workspace_events_endpoint_emits_connected_snapshot() {
 
     assert!(text.contains("docker_info"));
     assert!(text.contains("midgard-docker"));
+    assert!(!text.contains("operator_capability_execute"));
+
+    let kubernetes_slug = create_kubernetes_workspace(&app, &cookie).await;
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(workspace_slug_uri(&kubernetes_slug, "/events?once=true"))
+                .header(COOKIE, cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let text = String::from_utf8(body.to_vec()).unwrap();
+
+    assert!(text.contains("operator_capability_list"));
+    assert!(text.contains("operator_capability_execute"));
+    assert!(!text.contains("docker_info"));
 }
 
 #[tokio::test]

@@ -5,11 +5,12 @@ use std::{
 };
 
 use futures_util::{Stream, StreamExt};
-use midgard_core::RiskLevel;
+use midgard_core::{CapabilityDescriptor, RiskLevel};
 use midgard_protocol::{
     CommandType, MiddlewareResource, MiddlewareStatus, OPERATOR_PROTOCOL_VERSION,
     operator::{
-        OperatorRegistration, OperatorToServer, ServerAck, ServerCommand, ServerToOperator,
+        OperatorCapability, OperatorRegistration, OperatorToServer, ServerAck, ServerCommand,
+        ServerToOperator,
         operator_control_server::{OperatorControl, OperatorControlServer},
         operator_to_server, server_to_operator,
     },
@@ -19,6 +20,7 @@ use midgard_storage::{
     NewMiddlewareInstance, SharedOrganizationStore,
 };
 use midgard_tools::{Tool, ToolCallContext, ToolDefinition, ToolRegistry, ToolResult};
+use serde::Serialize;
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -47,7 +49,7 @@ impl OperatorRegistrationToken {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct OperatorConnectionSnapshot {
     pub operator_id: String,
     pub workspace_id: String,
@@ -55,7 +57,7 @@ pub struct OperatorConnectionSnapshot {
     pub display_name: String,
     pub connected: bool,
     pub supported_operations: Vec<String>,
-    pub capabilities: Vec<String>,
+    pub capabilities: Vec<CapabilityDescriptor>,
     pub last_heartbeat_unix_ms: Option<i64>,
 }
 
@@ -89,7 +91,7 @@ struct OperatorConnectionState {
     display_name: String,
     connected: bool,
     supported_operations: Vec<String>,
-    capabilities: Vec<String>,
+    capabilities: Vec<CapabilityDescriptor>,
     last_heartbeat_unix_ms: Option<i64>,
     sender: Option<mpsc::Sender<ServerToOperator>>,
 }
@@ -275,7 +277,7 @@ impl OperatorRegistry {
         }
     }
 
-    fn update_capabilities(&self, operator_id: &str, capabilities: Vec<String>) {
+    fn update_capabilities(&self, operator_id: &str, capabilities: Vec<CapabilityDescriptor>) {
         if let Ok(mut state) = self.inner.lock() {
             for connection in state.connections.values_mut() {
                 if connection.operator_id == operator_id && connection.connected {
@@ -369,7 +371,7 @@ impl OperatorControlService {
                 let capabilities = report
                     .capabilities
                     .into_iter()
-                    .map(|capability| capability.id)
+                    .map(capability_descriptor_from_protocol)
                     .collect();
                 self.state
                     .operator_registry
@@ -596,6 +598,486 @@ pub(crate) fn register_operator_tools(
         operators: operators.clone(),
     });
     registry.register(MiddlewareDeleteTool { orgs, operators });
+}
+
+pub(crate) fn register_protocol_capability_tools(
+    registry: &mut ToolRegistry,
+    orgs: SharedOrganizationStore,
+    operators: OperatorRegistry,
+) {
+    registry.register(OperatorCapabilityListTool {
+        operators: operators.clone(),
+    });
+    registry.register(OperatorCapabilityExecuteTool { orgs, operators });
+}
+
+struct OperatorCapabilityListTool {
+    operators: OperatorRegistry,
+}
+
+#[tonic::async_trait]
+impl Tool for OperatorCapabilityListTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition::new(
+            "operator_capability_list",
+            "List connected Kubernetes middleware operators and their reported protocol capabilities for the current workspace.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "middleware_kind": {"type": "string"}
+                },
+                "additionalProperties": false
+            }),
+            RiskLevel::Low,
+        )
+    }
+
+    async fn call(&self, arguments: Value) -> ToolResult {
+        self.call_with_context(arguments, ToolCallContext::default())
+            .await
+    }
+
+    async fn call_with_context(&self, arguments: Value, context: ToolCallContext) -> ToolResult {
+        let workspace_id = match scoped_workspace_string(&arguments, &context) {
+            Ok(workspace_id) => workspace_id,
+            Err(err) => return ToolResult::error(err),
+        };
+        let middleware_kind = optional_string(&arguments, "middleware_kind");
+        let operators = self
+            .operators
+            .snapshots()
+            .into_iter()
+            .filter(|snapshot| snapshot.connected && snapshot.workspace_id == workspace_id)
+            .filter(|snapshot| {
+                middleware_kind
+                    .as_ref()
+                    .map(|kind| &snapshot.middleware_kind == kind)
+                    .unwrap_or(true)
+            })
+            .collect::<Vec<_>>();
+
+        ToolResult::success(json!({ "operators": operators }).to_string())
+    }
+}
+
+struct OperatorCapabilityExecuteTool {
+    orgs: SharedOrganizationStore,
+    operators: OperatorRegistry,
+}
+
+#[tonic::async_trait]
+impl Tool for OperatorCapabilityExecuteTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition::new(
+            "operator_capability_execute",
+            "Execute one reported Kubernetes operator protocol capability for the current workspace.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "middleware_kind": {"type": "string"},
+                    "capability_id": {"type": "string"},
+                    "operation": {
+                        "type": "string",
+                        "enum": ["create", "update", "delete", "query", "refresh", "reconcile"]
+                    },
+                    "instance_id": {"type": "string", "format": "uuid"},
+                    "name": {"type": "string"},
+                    "namespace": {"type": "string", "default": "default"},
+                    "desired_state": {
+                        "type": "string",
+                        "enum": ["enabled", "disabled"],
+                        "default": "enabled"
+                    },
+                    "status": {
+                        "type": "string",
+                        "enum": ["pending", "running", "degraded", "stopped"]
+                    },
+                    "config": {"type": "object"}
+                },
+                "required": ["middleware_kind", "capability_id", "operation"],
+                "additionalProperties": false
+            }),
+            RiskLevel::Critical,
+        )
+    }
+
+    async fn call(&self, arguments: Value) -> ToolResult {
+        self.call_with_context(arguments, ToolCallContext::default())
+            .await
+    }
+
+    async fn call_with_context(&self, arguments: Value, context: ToolCallContext) -> ToolResult {
+        let workspace_id = match scoped_workspace_string(&arguments, &context) {
+            Ok(workspace_id) => workspace_id,
+            Err(err) => return ToolResult::error(err),
+        };
+        let workspace_uuid = match Uuid::parse_str(&workspace_id) {
+            Ok(workspace_id) => workspace_id,
+            Err(err) => return ToolResult::error(format!("workspace_id must be a UUID: {err}")),
+        };
+        let middleware_kind = match required_string(&arguments, "middleware_kind") {
+            Ok(kind) => kind,
+            Err(err) => return ToolResult::error(err),
+        };
+        let capability_id = match required_string(&arguments, "capability_id") {
+            Ok(capability_id) => capability_id,
+            Err(err) => return ToolResult::error(err),
+        };
+        let operation = match required_operation(&arguments) {
+            Ok(operation) => operation,
+            Err(err) => return ToolResult::error(err),
+        };
+        let command_type = match command_type_for_operation(&operation) {
+            Some(command_type) => command_type,
+            None => return ToolResult::error(format!("unsupported operation: {operation}")),
+        };
+
+        if let Err(err) = self.validate_operator_capability(
+            &workspace_id,
+            &middleware_kind,
+            &capability_id,
+            &operation,
+        ) {
+            return ToolResult::error(err);
+        }
+
+        match command_type {
+            CommandType::Create => {
+                let name = match required_string(&arguments, "name") {
+                    Ok(name) => name,
+                    Err(err) => return ToolResult::error(err),
+                };
+                let namespace = optional_string(&arguments, "namespace")
+                    .unwrap_or_else(|| "default".to_string());
+                let desired_state =
+                    desired_state_argument(&arguments).unwrap_or(MiddlewareDesiredState::Enabled);
+                let config = arguments
+                    .get("config")
+                    .cloned()
+                    .unwrap_or_else(|| json!({}));
+                let instance = match self
+                    .orgs
+                    .create_middleware_instance(NewMiddlewareInstance {
+                        workspace_id: workspace_uuid,
+                        kind: middleware_kind.clone(),
+                        name,
+                        namespace,
+                        desired_state,
+                        status: MiddlewareInstanceStatus::Pending,
+                        config,
+                    })
+                    .await
+                {
+                    Ok(instance) => instance,
+                    Err(err) => return ToolResult::error(err.to_string()),
+                };
+                let outcome = self.operators.dispatch_command(
+                    &workspace_id,
+                    &middleware_kind,
+                    command_for_instance(CommandType::Create, &instance),
+                );
+                protocol_dispatch_tool_result(
+                    "operator capability create dispatched",
+                    outcome,
+                    Some(&instance),
+                )
+            }
+            CommandType::Update => {
+                let instance_id = match required_uuid(&arguments, "instance_id") {
+                    Ok(instance_id) => instance_id,
+                    Err(err) => return ToolResult::error(err),
+                };
+                match load_middleware_instance(self.orgs.as_ref(), workspace_uuid, instance_id)
+                    .await
+                {
+                    Ok(Some(instance)) if instance.kind == middleware_kind => {}
+                    Ok(Some(_)) => {
+                        return ToolResult::error(
+                            "middleware instance kind does not match middleware_kind",
+                        );
+                    }
+                    Ok(None) => return ToolResult::error("middleware instance not found"),
+                    Err(err) => return ToolResult::error(err.to_string()),
+                }
+                let instance = match self
+                    .orgs
+                    .update_middleware_instance(
+                        workspace_uuid,
+                        instance_id,
+                        MiddlewareInstanceUpdate {
+                            desired_state: desired_state_argument(&arguments),
+                            status: status_argument(&arguments),
+                            config: arguments.get("config").cloned(),
+                            archived: None,
+                        },
+                    )
+                    .await
+                {
+                    Ok(Some(instance)) => instance,
+                    Ok(None) => return ToolResult::error("middleware instance not found"),
+                    Err(err) => return ToolResult::error(err.to_string()),
+                };
+                let outcome = self.operators.dispatch_command(
+                    &workspace_id,
+                    &middleware_kind,
+                    command_for_instance(CommandType::Update, &instance),
+                );
+                protocol_dispatch_tool_result(
+                    "operator capability update dispatched",
+                    outcome,
+                    Some(&instance),
+                )
+            }
+            CommandType::Delete => {
+                let instance_id = match required_uuid(&arguments, "instance_id") {
+                    Ok(instance_id) => instance_id,
+                    Err(err) => return ToolResult::error(err),
+                };
+                match load_middleware_instance(self.orgs.as_ref(), workspace_uuid, instance_id)
+                    .await
+                {
+                    Ok(Some(instance)) if instance.kind == middleware_kind => {}
+                    Ok(Some(_)) => {
+                        return ToolResult::error(
+                            "middleware instance kind does not match middleware_kind",
+                        );
+                    }
+                    Ok(None) => return ToolResult::error("middleware instance not found"),
+                    Err(err) => return ToolResult::error(err.to_string()),
+                }
+                let instance = match self
+                    .orgs
+                    .update_middleware_instance(
+                        workspace_uuid,
+                        instance_id,
+                        MiddlewareInstanceUpdate {
+                            desired_state: None,
+                            status: None,
+                            config: None,
+                            archived: Some(true),
+                        },
+                    )
+                    .await
+                {
+                    Ok(Some(instance)) => instance,
+                    Ok(None) => return ToolResult::error("middleware instance not found"),
+                    Err(err) => return ToolResult::error(err.to_string()),
+                };
+                let outcome = self.operators.dispatch_command(
+                    &workspace_id,
+                    &middleware_kind,
+                    command_for_instance(CommandType::Delete, &instance),
+                );
+                protocol_dispatch_tool_result(
+                    "operator capability delete dispatched",
+                    outcome,
+                    Some(&instance),
+                )
+            }
+            CommandType::Query => {
+                let instance_id = match required_uuid(&arguments, "instance_id") {
+                    Ok(instance_id) => instance_id,
+                    Err(err) => return ToolResult::error(err),
+                };
+                let instance =
+                    match load_middleware_instance(self.orgs.as_ref(), workspace_uuid, instance_id)
+                        .await
+                    {
+                        Ok(Some(instance)) => instance,
+                        Ok(None) => return ToolResult::error("middleware instance not found"),
+                        Err(err) => return ToolResult::error(err.to_string()),
+                    };
+                if instance.kind != middleware_kind {
+                    return ToolResult::error(
+                        "middleware instance kind does not match middleware_kind",
+                    );
+                }
+                let outcome = self.operators.dispatch_command(
+                    &workspace_id,
+                    &middleware_kind,
+                    command_for_instance(CommandType::Query, &instance),
+                );
+                protocol_dispatch_tool_result(
+                    "operator capability query dispatched",
+                    outcome,
+                    Some(&instance),
+                )
+            }
+            CommandType::Refresh => {
+                let outcome = self.operators.dispatch_command(
+                    &workspace_id,
+                    &middleware_kind,
+                    ServerCommand {
+                        operation_id: Uuid::new_v4().to_string(),
+                        command_type: CommandType::Refresh as i32,
+                        instance: None,
+                        instances: Vec::new(),
+                    },
+                );
+                protocol_dispatch_tool_result(
+                    "operator capability refresh dispatched",
+                    outcome,
+                    None,
+                )
+            }
+            CommandType::Reconcile => {
+                let instances = match self
+                    .orgs
+                    .list_middleware_instances_for_reconciliation(workspace_uuid)
+                    .await
+                {
+                    Ok(instances) => instances,
+                    Err(err) => return ToolResult::error(err.to_string()),
+                };
+                let resources = instances
+                    .iter()
+                    .filter(|instance| instance.kind == middleware_kind)
+                    .map(MiddlewareResource::from)
+                    .collect::<Vec<_>>();
+                let outcome = self.operators.dispatch_command(
+                    &workspace_id,
+                    &middleware_kind,
+                    ServerCommand {
+                        operation_id: Uuid::new_v4().to_string(),
+                        command_type: CommandType::Reconcile as i32,
+                        instance: None,
+                        instances: resources,
+                    },
+                );
+                protocol_dispatch_tool_result(
+                    "operator capability reconcile dispatched",
+                    outcome,
+                    None,
+                )
+            }
+            CommandType::UnknownCommandType => {
+                ToolResult::error(format!("unsupported operation: {operation}"))
+            }
+        }
+    }
+}
+
+impl OperatorCapabilityExecuteTool {
+    fn validate_operator_capability(
+        &self,
+        workspace_id: &str,
+        middleware_kind: &str,
+        capability_id: &str,
+        operation: &str,
+    ) -> Result<(), String> {
+        let Some(snapshot) = self.operators.snapshots().into_iter().find(|snapshot| {
+            snapshot.connected
+                && snapshot.workspace_id == workspace_id
+                && snapshot.middleware_kind == middleware_kind
+        }) else {
+            return Err(
+                "operator is not connected for this workspace and middleware kind".to_string(),
+            );
+        };
+        if !snapshot
+            .capabilities
+            .iter()
+            .any(|capability| capability.id == capability_id)
+        {
+            return Err(format!(
+                "operator capability is not available for this workspace and kind: {capability_id}"
+            ));
+        }
+        if !snapshot
+            .supported_operations
+            .iter()
+            .any(|supported| supported.eq_ignore_ascii_case(operation))
+        {
+            return Err(format!(
+                "operator does not support operation {operation} for middleware kind {middleware_kind}"
+            ));
+        }
+
+        Ok(())
+    }
+}
+
+fn capability_descriptor_from_protocol(capability: OperatorCapability) -> CapabilityDescriptor {
+    CapabilityDescriptor::new(
+        capability.id,
+        capability.name,
+        risk_level_from_protocol_label(&capability.risk_level),
+    )
+}
+
+fn risk_level_from_protocol_label(value: &str) -> RiskLevel {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "low" => RiskLevel::Low,
+        "medium" => RiskLevel::Medium,
+        "high" => RiskLevel::High,
+        "critical" => RiskLevel::Critical,
+        _ => RiskLevel::Critical,
+    }
+}
+
+fn required_operation(arguments: &Value) -> Result<String, String> {
+    let operation = required_string(arguments, "operation")?.to_ascii_lowercase();
+    if command_type_for_operation(&operation).is_some() {
+        Ok(operation)
+    } else {
+        Err(format!("unsupported operation: {operation}"))
+    }
+}
+
+fn command_type_for_operation(operation: &str) -> Option<CommandType> {
+    match operation {
+        "create" => Some(CommandType::Create),
+        "update" => Some(CommandType::Update),
+        "delete" => Some(CommandType::Delete),
+        "query" => Some(CommandType::Query),
+        "refresh" => Some(CommandType::Refresh),
+        "reconcile" => Some(CommandType::Reconcile),
+        _ => None,
+    }
+}
+
+async fn load_middleware_instance(
+    orgs: &dyn midgard_storage::OrganizationStore,
+    workspace_id: Uuid,
+    instance_id: Uuid,
+) -> midgard_core::MidgardResult<Option<midgard_storage::MiddlewareInstance>> {
+    Ok(orgs
+        .list_middleware_instances_for_reconciliation(workspace_id)
+        .await?
+        .into_iter()
+        .find(|instance| instance.id == instance_id))
+}
+
+fn protocol_dispatch_tool_result(
+    message: &str,
+    outcome: OperatorDispatchOutcome,
+    instance: Option<&midgard_storage::MiddlewareInstance>,
+) -> ToolResult {
+    match outcome {
+        OperatorDispatchOutcome::Delivered => match instance {
+            Some(instance) => ToolResult::success(
+                json!({
+                    "message": message,
+                    "operator_dispatch": "delivered",
+                    "instance": instance,
+                })
+                .to_string(),
+            ),
+            None => ToolResult::success(
+                json!({
+                    "message": message,
+                    "operator_dispatch": "delivered",
+                })
+                .to_string(),
+            ),
+        },
+        OperatorDispatchOutcome::NotConnected => {
+            ToolResult::error("operator is not connected for this workspace and kind")
+        }
+        OperatorDispatchOutcome::Backpressure => {
+            ToolResult::error("operator command queue is full")
+        }
+    }
 }
 
 struct MiddlewareListTool {
@@ -1020,13 +1502,33 @@ mod tests {
     };
 
     fn registration(operator_id: &str) -> OperatorRegistration {
+        registration_for(operator_id, Uuid::nil(), "redis", ["create", "delete"])
+    }
+
+    fn registration_for<const N: usize>(
+        operator_id: &str,
+        workspace_id: Uuid,
+        middleware_kind: &str,
+        supported_operations: [&str; N],
+    ) -> OperatorRegistration {
         OperatorRegistration {
             protocol_version: OPERATOR_PROTOCOL_VERSION,
             operator_id: operator_id.to_string(),
-            workspace_id: Uuid::nil().to_string(),
-            middleware_kind: "redis".to_string(),
-            display_name: "Redis Operator".to_string(),
-            supported_operations: vec!["create".to_string(), "delete".to_string()],
+            workspace_id: workspace_id.to_string(),
+            middleware_kind: middleware_kind.to_string(),
+            display_name: format!("{middleware_kind} Operator"),
+            supported_operations: supported_operations
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+        }
+    }
+
+    fn capability(id: &str, name: &str, risk_level: &str) -> OperatorCapability {
+        OperatorCapability {
+            id: id.to_string(),
+            name: name.to_string(),
+            risk_level: risk_level.to_string(),
         }
     }
 
@@ -1061,6 +1563,42 @@ mod tests {
 
         let snapshot = registry.snapshots().pop().unwrap();
         assert!(!snapshot.connected);
+    }
+
+    #[test]
+    fn registry_preserves_capability_metadata_and_defaults_unknown_risk_to_critical() {
+        let registry = OperatorRegistry::new(vec![OperatorRegistrationToken::new(
+            Uuid::nil().to_string(),
+            "secret",
+        )]);
+        let (sender, _receiver) = mpsc::channel(1);
+        let _lease = registry
+            .register("secret", registration("operator-1"), sender)
+            .unwrap();
+
+        registry.update_capabilities(
+            "operator-1",
+            vec![
+                capability_descriptor_from_protocol(capability(
+                    "redis.query",
+                    "Query Redis",
+                    "low",
+                )),
+                capability_descriptor_from_protocol(capability(
+                    "redis.destroy",
+                    "Destroy Redis",
+                    "unexpected",
+                )),
+            ],
+        );
+
+        let snapshot = registry.snapshots().pop().unwrap();
+        assert_eq!(snapshot.capabilities[0].id, "redis.query");
+        assert_eq!(snapshot.capabilities[0].name, "Query Redis");
+        assert_eq!(snapshot.capabilities[0].risk_level, RiskLevel::Low);
+        assert!(!snapshot.capabilities[0].requires_approval);
+        assert_eq!(snapshot.capabilities[1].risk_level, RiskLevel::Critical);
+        assert!(snapshot.capabilities[1].requires_approval);
     }
 
     #[test]
@@ -1244,5 +1782,483 @@ mod tests {
 
         assert!(result.is_error);
         assert!(result.output.contains("current agent workspace"));
+    }
+
+    #[tokio::test]
+    async fn operator_capability_list_filters_connected_capabilities_by_workspace_and_kind() {
+        let workspace_id = Uuid::new_v4();
+        let other_workspace_id = Uuid::new_v4();
+        let registry = OperatorRegistry::new(vec![
+            OperatorRegistrationToken::new(workspace_id.to_string(), "secret"),
+            OperatorRegistrationToken::new(other_workspace_id.to_string(), "secret"),
+        ]);
+        let (sender, _receiver) = mpsc::channel(4);
+        let _lease = registry
+            .register(
+                "secret",
+                registration_for("operator-1", workspace_id, "valkey", ["query"]),
+                sender,
+            )
+            .unwrap();
+        registry.update_capabilities(
+            "operator-1",
+            vec![capability_descriptor_from_protocol(capability(
+                "valkey.query",
+                "Query Valkey clusters",
+                "low",
+            ))],
+        );
+        let (sender, _receiver) = mpsc::channel(4);
+        let _other_lease = registry
+            .register(
+                "secret",
+                registration_for("operator-2", other_workspace_id, "redis", ["query"]),
+                sender,
+            )
+            .unwrap();
+        let tool = OperatorCapabilityListTool {
+            operators: registry,
+        };
+
+        let result = tool
+            .call_with_context(
+                json!({"middleware_kind": "valkey"}),
+                ToolCallContext {
+                    workspace_id: Some(workspace_id.to_string()),
+                },
+            )
+            .await;
+
+        assert!(result.success);
+        let output: Value = serde_json::from_str(&result.output).unwrap();
+        let operators = output["operators"].as_array().unwrap();
+        assert_eq!(operators.len(), 1);
+        assert_eq!(operators[0]["middleware_kind"], "valkey");
+        assert_eq!(operators[0]["capabilities"][0]["id"], "valkey.query");
+        assert_eq!(operators[0]["capabilities"][0]["risk_level"], "low");
+    }
+
+    #[tokio::test]
+    async fn operator_capability_execute_rejects_disconnected_operator_before_persisting() {
+        let workspace_id = Uuid::new_v4();
+        let orgs = Arc::new(MemoryOrganizationStore::new());
+        let tool = OperatorCapabilityExecuteTool {
+            orgs: orgs.clone(),
+            operators: OperatorRegistry::default(),
+        };
+
+        let result = tool
+            .call_with_context(
+                json!({
+                    "middleware_kind": "valkey",
+                    "capability_id": "valkey.create",
+                    "operation": "create",
+                    "name": "cache",
+                    "namespace": "data",
+                    "config": {"shards": 3}
+                }),
+                ToolCallContext {
+                    workspace_id: Some(workspace_id.to_string()),
+                },
+            )
+            .await;
+
+        assert!(result.is_error);
+        assert!(result.output.contains("operator is not connected"));
+        assert!(
+            orgs.list_middleware_instances(workspace_id)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn operator_capability_execute_rejects_unknown_capability_and_unsupported_operation() {
+        let workspace_id = Uuid::new_v4();
+        let registry = OperatorRegistry::new(vec![OperatorRegistrationToken::new(
+            workspace_id.to_string(),
+            "secret",
+        )]);
+        let (sender, _receiver) = mpsc::channel(4);
+        let _lease = registry
+            .register(
+                "secret",
+                registration_for("operator-1", workspace_id, "valkey", ["create"]),
+                sender,
+            )
+            .unwrap();
+        registry.update_capabilities(
+            "operator-1",
+            vec![capability_descriptor_from_protocol(capability(
+                "valkey.create",
+                "Create Valkey clusters",
+                "high",
+            ))],
+        );
+        let tool = OperatorCapabilityExecuteTool {
+            orgs: Arc::new(MemoryOrganizationStore::new()),
+            operators: registry,
+        };
+        let context = ToolCallContext {
+            workspace_id: Some(workspace_id.to_string()),
+        };
+
+        let unknown_capability = tool
+            .call_with_context(
+                json!({
+                    "middleware_kind": "valkey",
+                    "capability_id": "valkey.delete",
+                    "operation": "create",
+                    "name": "cache"
+                }),
+                context.clone(),
+            )
+            .await;
+        let unsupported_operation = tool
+            .call_with_context(
+                json!({
+                    "middleware_kind": "valkey",
+                    "capability_id": "valkey.create",
+                    "operation": "delete",
+                    "instance_id": Uuid::new_v4().to_string()
+                }),
+                context,
+            )
+            .await;
+
+        assert!(unknown_capability.is_error);
+        assert!(unknown_capability.output.contains("not available"));
+        assert!(unsupported_operation.is_error);
+        assert!(
+            unsupported_operation
+                .output
+                .contains("does not support operation")
+        );
+    }
+
+    #[tokio::test]
+    async fn operator_capability_execute_rejects_instance_kind_mismatch_before_mutating() {
+        let workspace_id = Uuid::new_v4();
+        let orgs = Arc::new(MemoryOrganizationStore::new());
+        let instance = orgs
+            .create_middleware_instance(NewMiddlewareInstance {
+                workspace_id,
+                kind: "redis".to_string(),
+                name: "cache".to_string(),
+                namespace: "data".to_string(),
+                desired_state: MiddlewareDesiredState::Enabled,
+                status: MiddlewareInstanceStatus::Pending,
+                config: json!({"memory": "512Mi"}),
+            })
+            .await
+            .unwrap();
+        let registry = OperatorRegistry::new(vec![OperatorRegistrationToken::new(
+            workspace_id.to_string(),
+            "secret",
+        )]);
+        let (sender, _receiver) = mpsc::channel(4);
+        let _lease = registry
+            .register(
+                "secret",
+                registration_for("operator-1", workspace_id, "valkey", ["update"]),
+                sender,
+            )
+            .unwrap();
+        registry.update_capabilities(
+            "operator-1",
+            vec![capability_descriptor_from_protocol(capability(
+                "valkey.update",
+                "Update Valkey clusters",
+                "high",
+            ))],
+        );
+        let tool = OperatorCapabilityExecuteTool {
+            orgs: orgs.clone(),
+            operators: registry,
+        };
+
+        let result = tool
+            .call_with_context(
+                json!({
+                    "middleware_kind": "valkey",
+                    "capability_id": "valkey.update",
+                    "operation": "update",
+                    "instance_id": instance.id.to_string(),
+                    "config": {"shards": 5}
+                }),
+                ToolCallContext {
+                    workspace_id: Some(workspace_id.to_string()),
+                },
+            )
+            .await;
+
+        assert!(result.is_error);
+        assert!(result.output.contains("kind does not match"));
+        let unchanged = orgs
+            .list_middleware_instances(workspace_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|current| current.id == instance.id)
+            .unwrap();
+        assert_eq!(unchanged.config, json!({"memory": "512Mi"}));
+    }
+
+    #[tokio::test]
+    async fn operator_capability_execute_dispatches_query_refresh_and_reconcile() {
+        let workspace_id = Uuid::new_v4();
+        let orgs = Arc::new(MemoryOrganizationStore::new());
+        let valkey = orgs
+            .create_middleware_instance(NewMiddlewareInstance {
+                workspace_id,
+                kind: "valkey".to_string(),
+                name: "cache".to_string(),
+                namespace: "data".to_string(),
+                desired_state: MiddlewareDesiredState::Enabled,
+                status: MiddlewareInstanceStatus::Pending,
+                config: json!({"shards": 3}),
+            })
+            .await
+            .unwrap();
+        orgs.create_middleware_instance(NewMiddlewareInstance {
+            workspace_id,
+            kind: "redis".to_string(),
+            name: "legacy".to_string(),
+            namespace: "data".to_string(),
+            desired_state: MiddlewareDesiredState::Enabled,
+            status: MiddlewareInstanceStatus::Pending,
+            config: json!({}),
+        })
+        .await
+        .unwrap();
+        let registry = OperatorRegistry::new(vec![OperatorRegistrationToken::new(
+            workspace_id.to_string(),
+            "secret",
+        )]);
+        let (sender, mut receiver) = mpsc::channel(8);
+        let _lease = registry
+            .register(
+                "secret",
+                registration_for(
+                    "operator-1",
+                    workspace_id,
+                    "valkey",
+                    ["query", "refresh", "reconcile"],
+                ),
+                sender,
+            )
+            .unwrap();
+        registry.update_capabilities(
+            "operator-1",
+            vec![
+                capability_descriptor_from_protocol(capability(
+                    "valkey.query",
+                    "Query Valkey clusters",
+                    "low",
+                )),
+                capability_descriptor_from_protocol(capability(
+                    "valkey.refresh",
+                    "Refresh Valkey inventory",
+                    "medium",
+                )),
+                capability_descriptor_from_protocol(capability(
+                    "valkey.reconcile",
+                    "Reconcile Valkey clusters",
+                    "medium",
+                )),
+            ],
+        );
+        let tool = OperatorCapabilityExecuteTool {
+            orgs,
+            operators: registry,
+        };
+        let context = ToolCallContext {
+            workspace_id: Some(workspace_id.to_string()),
+        };
+
+        let query = tool
+            .call_with_context(
+                json!({
+                    "middleware_kind": "valkey",
+                    "capability_id": "valkey.query",
+                    "operation": "query",
+                    "instance_id": valkey.id.to_string()
+                }),
+                context.clone(),
+            )
+            .await;
+        assert!(query.success);
+        let query_command = dispatched_command(&mut receiver).await;
+        assert_eq!(
+            CommandType::try_from(query_command.command_type).unwrap(),
+            CommandType::Query
+        );
+        assert_eq!(query_command.instance.unwrap().id, valkey.id.to_string());
+
+        let refresh = tool
+            .call_with_context(
+                json!({
+                    "middleware_kind": "valkey",
+                    "capability_id": "valkey.refresh",
+                    "operation": "refresh"
+                }),
+                context.clone(),
+            )
+            .await;
+        assert!(refresh.success);
+        let refresh_command = dispatched_command(&mut receiver).await;
+        assert_eq!(
+            CommandType::try_from(refresh_command.command_type).unwrap(),
+            CommandType::Refresh
+        );
+        assert!(refresh_command.instance.is_none());
+
+        let reconcile = tool
+            .call_with_context(
+                json!({
+                    "middleware_kind": "valkey",
+                    "capability_id": "valkey.reconcile",
+                    "operation": "reconcile"
+                }),
+                context,
+            )
+            .await;
+        assert!(reconcile.success);
+        let reconcile_command = dispatched_command(&mut receiver).await;
+        assert_eq!(
+            CommandType::try_from(reconcile_command.command_type).unwrap(),
+            CommandType::Reconcile
+        );
+        assert_eq!(reconcile_command.instances.len(), 1);
+        assert_eq!(reconcile_command.instances[0].kind, "valkey");
+    }
+
+    #[tokio::test]
+    async fn operator_capability_execute_persists_state_and_dispatches_commands() {
+        let workspace_id = Uuid::new_v4();
+        let orgs = Arc::new(MemoryOrganizationStore::new());
+        let registry = OperatorRegistry::new(vec![OperatorRegistrationToken::new(
+            workspace_id.to_string(),
+            "secret",
+        )]);
+        let (sender, mut receiver) = mpsc::channel(8);
+        let _lease = registry
+            .register(
+                "secret",
+                registration_for(
+                    "operator-1",
+                    workspace_id,
+                    "valkey",
+                    ["create", "update", "delete"],
+                ),
+                sender,
+            )
+            .unwrap();
+        registry.update_capabilities(
+            "operator-1",
+            vec![
+                capability_descriptor_from_protocol(capability(
+                    "valkey.create",
+                    "Create Valkey clusters",
+                    "high",
+                )),
+                capability_descriptor_from_protocol(capability(
+                    "valkey.update",
+                    "Update Valkey clusters",
+                    "high",
+                )),
+                capability_descriptor_from_protocol(capability(
+                    "valkey.delete",
+                    "Delete Valkey clusters",
+                    "critical",
+                )),
+            ],
+        );
+        let tool = OperatorCapabilityExecuteTool {
+            orgs: orgs.clone(),
+            operators: registry,
+        };
+        let context = ToolCallContext {
+            workspace_id: Some(workspace_id.to_string()),
+        };
+
+        let create = tool
+            .call_with_context(
+                json!({
+                    "middleware_kind": "valkey",
+                    "capability_id": "valkey.create",
+                    "operation": "create",
+                    "name": "cache",
+                    "namespace": "data",
+                    "config": {"shards": 3}
+                }),
+                context.clone(),
+            )
+            .await;
+        assert!(create.success);
+        let create_output: Value = serde_json::from_str(&create.output).unwrap();
+        let instance_id =
+            Uuid::parse_str(create_output["instance"]["id"].as_str().unwrap()).unwrap();
+        let create_command = dispatched_command(&mut receiver).await;
+        assert_eq!(
+            CommandType::try_from(create_command.command_type).unwrap(),
+            CommandType::Create
+        );
+        assert_eq!(create_command.instance.unwrap().kind, "valkey");
+
+        let update = tool
+            .call_with_context(
+                json!({
+                    "middleware_kind": "valkey",
+                    "capability_id": "valkey.update",
+                    "operation": "update",
+                    "instance_id": instance_id.to_string(),
+                    "config": {"shards": 5}
+                }),
+                context.clone(),
+            )
+            .await;
+        assert!(update.success);
+        let update_command = dispatched_command(&mut receiver).await;
+        assert_eq!(
+            CommandType::try_from(update_command.command_type).unwrap(),
+            CommandType::Update
+        );
+        assert_eq!(update_command.instance.unwrap().id, instance_id.to_string());
+
+        let delete = tool
+            .call_with_context(
+                json!({
+                    "middleware_kind": "valkey",
+                    "capability_id": "valkey.delete",
+                    "operation": "delete",
+                    "instance_id": instance_id.to_string()
+                }),
+                context,
+            )
+            .await;
+        assert!(delete.success);
+        let delete_command = dispatched_command(&mut receiver).await;
+        assert_eq!(
+            CommandType::try_from(delete_command.command_type).unwrap(),
+            CommandType::Delete
+        );
+        let archived = orgs
+            .list_middleware_instances_for_reconciliation(workspace_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|instance| instance.id == instance_id)
+            .unwrap();
+        assert!(archived.archived_at.is_some());
+    }
+
+    async fn dispatched_command(receiver: &mut mpsc::Receiver<ServerToOperator>) -> ServerCommand {
+        let message = receiver.recv().await.unwrap();
+        let Some(server_to_operator::Payload::Command(command)) = message.payload else {
+            panic!("expected command");
+        };
+        command
     }
 }
