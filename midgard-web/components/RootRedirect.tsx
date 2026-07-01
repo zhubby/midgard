@@ -36,20 +36,17 @@ export function RootRedirect({
     fetchOrganizationContexts()
       .then((contexts) => {
         if (cancelled) return;
-        const context = contexts.find((item) => item.workspaces.length > 0);
-        const workspace = context?.workspaces[0];
-        if (!context || !workspace) {
-          if (!systemPermissions.includes("system.orgs.create")) {
-            setState({ status: "no_access", error: null });
-            return;
-          }
-          router.replace("/organizations/new");
+        if (contexts.length > 0) {
+          router.replace("/organizations");
           return;
         }
 
-        router.replace(
-          `/orgs/${context.organization.slug}/workspaces/${workspace.slug}`,
-        );
+        if (!systemPermissions.includes("system.orgs.create")) {
+          setState({ status: "no_access", error: null });
+          return;
+        }
+
+        router.replace("/organizations/new");
       })
       .catch((caught) => {
         if (!cancelled) {
@@ -86,7 +83,7 @@ export function RootRedirect({
         </div>
         <div>
           <p className="section-kicker">{user.display_name || user.email}</p>
-          <h1>{state.error ?? "Opening workspace"}</h1>
+          <h1>{state.error ?? "Opening organizations"}</h1>
         </div>
       </div>
     </main>

@@ -75,7 +75,7 @@ export type OrganizationContext = { organization: Organization, membership: Orga
 
 export type WorkspaceRuntimeConfigInput = { "mode": "docker", docker_api_url: string, allow_insecure_local_endpoint: boolean, } | { "mode": "kubernetes", kubeconfig: string, };
 
-export type CreateOrganizationRequest = { name: string, slug: string | null, workspace_name: string | null, workspace_slug: string | null, workspace_runtime_config: WorkspaceRuntimeConfigInput | null, };
+export type CreateOrganizationRequest = { name: string, slug: string | null, };
 
 export type CreateWorkspaceRequest = { name: string, slug: string | null, runtime_config: WorkspaceRuntimeConfigInput | null, };
 

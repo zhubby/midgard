@@ -363,20 +363,6 @@ async fn create_organization(
     let slug = request
         .slug
         .unwrap_or_else(|| slug_from_name(&name, "organization"));
-    let workspace_name = request
-        .workspace_name
-        .map(|value| required_request_name(&value, "workspace name"))
-        .transpose()?
-        .unwrap_or_else(|| "Operations".to_string());
-    let workspace_slug = request
-        .workspace_slug
-        .unwrap_or_else(|| slug_from_name(&workspace_name, "workspace"));
-    let runtime_config = runtime::prepare_workspace_runtime_config(
-        &state.workspace_credentials,
-        request.workspace_runtime_config.ok_or_else(|| {
-            AppError::BadRequest("workspace_runtime_config is required".to_string())
-        })?,
-    )?;
     let organization = state
         .orgs
         .create_organization(NewOrganization {
@@ -397,23 +383,13 @@ async fn create_organization(
         })
         .await
         .map_err(storage_app_error)?;
-    let workspace = state
-        .orgs
-        .create_workspace(NewWorkspace {
-            organization_id: organization.id,
-            slug: workspace_slug,
-            name: workspace_name,
-            runtime_config: Some(runtime_config),
-        })
-        .await
-        .map_err(storage_app_error)?;
 
     Ok((
         StatusCode::CREATED,
         Json(OrganizationContext {
             organization,
             membership,
-            workspaces: vec![workspace],
+            workspaces: Vec::new(),
             permissions: PermissionKey::organization_permissions(),
         }),
     ))
@@ -1783,12 +1759,6 @@ pub struct CreateOrganizationRequest {
     pub name: String,
     #[serde(default)]
     pub slug: Option<String>,
-    #[serde(default)]
-    pub workspace_name: Option<String>,
-    #[serde(default)]
-    pub workspace_slug: Option<String>,
-    #[serde(default)]
-    pub workspace_runtime_config: Option<WorkspaceRuntimeConfigInput>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]

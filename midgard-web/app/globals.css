@@ -228,6 +228,7 @@ p {
   font-weight: 600;
   line-height: 1;
   padding: 0 14px;
+  text-decoration: none;
   transition:
     background-color 150ms ease,
     border-color 150ms ease,
@@ -795,6 +796,116 @@ select {
 
 .logout-button {
   min-height: 36px;
+}
+
+.org-management-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 0.34fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.organization-home-grid {
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 0.38fr);
+}
+
+.org-list {
+  display: grid;
+  gap: 10px;
+  padding: 16px;
+}
+
+.org-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 12px;
+  align-items: center;
+  min-width: 0;
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius);
+  background: hsl(var(--background));
+  padding: 12px;
+}
+
+.org-row-main {
+  min-width: 0;
+}
+
+.org-row-main strong {
+  display: block;
+  overflow: hidden;
+  font-size: 0.95rem;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.org-row-main p {
+  overflow: hidden;
+  margin-top: 2px;
+  color: hsl(var(--muted-foreground));
+  font-size: 0.82rem;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.org-row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.org-empty-row {
+  display: grid;
+  gap: 8px;
+}
+
+.org-empty-row p {
+  color: hsl(var(--muted-foreground));
+}
+
+.org-summary-list {
+  display: grid;
+  gap: 1px;
+  border-top: 1px solid hsl(var(--border));
+  background: hsl(var(--border));
+}
+
+.org-summary-list.compact {
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.org-summary-list > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  background: hsl(var(--card));
+  padding: 14px 16px;
+}
+
+.org-summary-list span {
+  color: hsl(var(--muted-foreground));
+  font-size: 0.74rem;
+  font-weight: 650;
+  text-transform: uppercase;
+}
+
+.org-summary-list strong {
+  overflow: hidden;
+  font-size: 1rem;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.org-summary-list p {
+  color: hsl(var(--muted-foreground));
+  font-size: 0.8rem;
+  line-height: 1.35;
 }
 
 .composer-actions {
@@ -1389,9 +1500,20 @@ select {
   .metric-grid,
   .dashboard-columns,
   .settings-grid,
+  .org-management-grid,
+  .organization-home-grid,
   .role-layout,
   .permission-grid {
     grid-template-columns: 1fr;
+  }
+
+  .org-row {
+    grid-template-columns: 1fr;
+  }
+
+  .org-row-meta,
+  .org-row .instance-actions {
+    justify-content: stretch;
   }
 
   .role-list {

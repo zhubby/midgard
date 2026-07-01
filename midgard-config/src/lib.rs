@@ -1,4 +1,6 @@
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use midgard_core::{LlmApiMode, LlmConfig, MidgardError, MidgardResult};
+use rand::{RngCore, rngs::OsRng};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
@@ -7,6 +9,7 @@ use std::{
 
 const CONFIG_DIR: &str = ".midgard";
 const CONFIG_FILE: &str = "config.toml";
+const WORKSPACE_CREDENTIAL_KEY_BYTES: usize = 32;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct MidgardConfig {
@@ -30,7 +33,7 @@ impl MidgardConfig {
             operator_control: OperatorControlConfig::default(),
             database: DatabaseConfig { url: String::new() },
             auth: AuthConfig::default(),
-            secrets: SecretsConfig::default(),
+            secrets: SecretsConfig::generated(),
             llm: LlmFileConfig {
                 base_url: "https://api.openai.com/v1".to_string(),
                 model: "gpt-4o-mini".to_string(),
@@ -153,9 +156,27 @@ impl Default for AuthConfig {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SecretsConfig {
     pub workspace_credentials_key: String,
+}
+
+impl SecretsConfig {
+    pub fn generated() -> Self {
+        let mut key = [0_u8; WORKSPACE_CREDENTIAL_KEY_BYTES];
+        OsRng.fill_bytes(&mut key);
+        Self {
+            workspace_credentials_key: URL_SAFE_NO_PAD.encode(key),
+        }
+    }
+}
+
+impl Default for SecretsConfig {
+    fn default() -> Self {
+        Self {
+            workspace_credentials_key: String::new(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -193,7 +214,11 @@ pub fn load_or_create(path: Option<&Path>) -> MidgardResult<LoadedConfig> {
     };
 
     let created = ensure_default_config(&path, false)?;
-    let config = load_config(&path)?;
+    let mut config = load_config(&path)?;
+    if config.secrets.workspace_credentials_key.trim().is_empty() {
+        config.secrets = SecretsConfig::generated();
+        write_config(&path, &config)?;
+    }
 
     Ok(LoadedConfig {
         path,
@@ -216,19 +241,21 @@ pub fn ensure_default_config(path: &Path, force: bool) -> MidgardResult<bool> {
         })?;
     }
 
-    let contents =
-        toml::to_string_pretty(&MidgardConfig::default_for_new_file()).map_err(|err| {
-            MidgardError::Configuration(format!("failed to serialize default config: {err}"))
-        })?;
+    write_config(path, &MidgardConfig::default_for_new_file())?;
+
+    Ok(true)
+}
+
+fn write_config(path: &Path, config: &MidgardConfig) -> MidgardResult<()> {
+    let contents = toml::to_string_pretty(config)
+        .map_err(|err| MidgardError::Configuration(format!("failed to serialize config: {err}")))?;
 
     fs::write(path, contents).map_err(|err| {
         MidgardError::Configuration(format!(
             "failed to write config file {}: {err}",
             path.display()
         ))
-    })?;
-
-    Ok(true)
+    })
 }
 
 fn non_empty_parent(path: &Path) -> Option<&Path> {
@@ -279,7 +306,10 @@ mod tests {
         assert_eq!(loaded.path, path);
         assert_eq!(loaded.config.database.url, "");
         assert_eq!(loaded.config.auth.cookie_name, "midgard_session");
-        assert_eq!(loaded.config.secrets.workspace_credentials_key, "");
+        assert!(
+            loaded.config.secrets.workspace_credentials_key.len() >= 32,
+            "new config should include a generated workspace credential key"
+        );
         assert_eq!(loaded.config.server.bind_address, "0.0.0.0:8080");
         assert!(!loaded.config.operator_control.enabled);
         assert_eq!(loaded.config.operator_control.bind_address, "0.0.0.0:8081");
@@ -291,6 +321,26 @@ mod tests {
                 .is_empty()
         );
         assert!(loaded.path.exists());
+    }
+
+    #[test]
+    fn load_or_create_backfills_missing_workspace_credential_key() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(".midgard/config.toml");
+        let mut config = MidgardConfig::default_for_new_file();
+        config.secrets.workspace_credentials_key.clear();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, toml::to_string_pretty(&config).unwrap()).unwrap();
+
+        let loaded = load_or_create(Some(&path)).unwrap();
+        let persisted = load_config(&path).unwrap();
+
+        assert!(!loaded.created);
+        assert!(!loaded.config.secrets.workspace_credentials_key.is_empty());
+        assert_eq!(
+            loaded.config.secrets.workspace_credentials_key,
+            persisted.secrets.workspace_credentials_key
+        );
     }
 
     #[test]

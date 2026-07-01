@@ -64,6 +64,9 @@ bind_address = "0.0.0.0:8080"
 [database]
 url = ""
 
+[secrets]
+workspace_credentials_key = "generated-random-key"
+
 [llm]
 base_url = "https://api.openai.com/v1"
 model = "gpt-4o-mini"
@@ -71,4 +74,4 @@ api_mode = "chat_completions"
 api_key = ""
 ```
 
-Fill `database.url` before starting the server or running migrations. The LLM provider target is OpenAI-compatible; use `api_mode = "chat_completions"` by default, or `api_mode = "responses"` for providers that support the Responses API.
+Fill `database.url` before starting the server or running migrations. The CLI generates `secrets.workspace_credentials_key` for encrypting workspace runtime credentials. The LLM provider target is OpenAI-compatible; use `api_mode = "chat_completions"` by default, or `api_mode = "responses"` for providers that support the Responses API.

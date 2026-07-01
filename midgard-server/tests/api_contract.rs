@@ -528,15 +528,14 @@ async fn user_without_organizations_can_create_first_organization() {
     assert_eq!(contexts.as_array().unwrap().len(), 0);
 
     let create = app
+        .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
                 .uri("/api/orgs")
-                .header(COOKIE, cookie)
+                .header(COOKIE, cookie.clone())
                 .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"name":"Platform Ops","workspace_runtime_config":{"mode":"docker","docker_api_url":"https://docker.example.com:2376"}}"#,
-                ))
+                .body(Body::from(r#"{"name":"Platform Ops"}"#))
                 .unwrap(),
         )
         .await
@@ -547,7 +546,26 @@ async fn user_without_organizations_can_create_first_organization() {
 
     assert_eq!(context["organization"]["slug"], "platform-ops");
     assert_eq!(context["membership"]["role"], "owner");
-    assert_eq!(context["workspaces"][0]["slug"], "operations");
+    assert_eq!(context["workspaces"].as_array().unwrap().len(), 0);
+
+    let workspace = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/orgs/platform-ops/workspaces")
+                .header(COOKIE, cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"name":"Operations","runtime_config":{"mode":"docker","docker_api_url":"https://docker.example.com:2376"}}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(workspace.status(), StatusCode::CREATED);
+    let body = to_bytes(workspace.into_body(), usize::MAX).await.unwrap();
+    let workspace: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(workspace["slug"], "operations");
 }
 
 #[tokio::test]

@@ -1983,8 +1983,10 @@ dependencies = [
 name = "midgard-config"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "dirs",
  "midgard-core",
+ "rand 0.8.6",
  "serde",
  "tempfile",
  "toml",

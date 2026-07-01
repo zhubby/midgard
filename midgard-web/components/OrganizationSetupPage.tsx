@@ -4,7 +4,7 @@ import { type FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
 import { NoWorkspaceAccess } from "@/components/NoWorkspaceAccess";
 import { createOrganization } from "@/lib/api";
-import type { AuthUser, WorkspaceRuntimeMode } from "@/lib/types";
+import type { AuthUser } from "@/lib/types";
 
 interface OrganizationSetupPageProps {
   busyAuth: boolean;
@@ -21,12 +21,6 @@ export function OrganizationSetupPage({
 }: OrganizationSetupPageProps) {
   const router = useRouter();
   const [organizationName, setOrganizationName] = useState("");
-  const [workspaceName, setWorkspaceName] = useState("Operations");
-  const [runtimeMode, setRuntimeMode] =
-    useState<WorkspaceRuntimeMode>("kubernetes");
-  const [dockerApiUrl, setDockerApiUrl] = useState("");
-  const [allowInsecureDocker, setAllowInsecureDocker] = useState(false);
-  const [kubeconfig, setKubeconfig] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -41,24 +35,8 @@ export function OrganizationSetupPage({
       const context = await createOrganization({
         name: organizationName,
         slug: null,
-        workspace_name: workspaceName,
-        workspace_slug: null,
-        workspace_runtime_config:
-          runtimeMode === "docker"
-            ? {
-                mode: "docker",
-                docker_api_url: dockerApiUrl,
-                allow_insecure_local_endpoint: allowInsecureDocker,
-              }
-            : {
-                mode: "kubernetes",
-                kubeconfig,
-              },
       });
-      const workspace = context.workspaces[0];
-      router.replace(
-        `/orgs/${context.organization.slug}/workspaces/${workspace.slug}`,
-      );
+      router.replace(`/orgs/${context.organization.slug}`);
     } catch (caught) {
       setError(
         caught instanceof Error
@@ -101,13 +79,13 @@ export function OrganizationSetupPage({
           </article>
           <article>
             <span>Scope</span>
-            <strong>Organization / Workspace</strong>
-            <p>Agent sessions and middleware events are isolated by workspace.</p>
+            <strong>Organization</strong>
+            <p>Membership, roles, and workspace boundaries are managed separately.</p>
           </article>
           <article>
-            <span>Runtime</span>
-            <strong>{runtimeMode}</strong>
-            <p>Credentials are stored encrypted and never returned to the UI.</p>
+            <span>Next step</span>
+            <strong>Workspace setup</strong>
+            <p>Create a workspace only after entering the new organization.</p>
           </article>
         </div>
       </section>
@@ -116,7 +94,7 @@ export function OrganizationSetupPage({
         <div className="section-row org-card-heading">
           <div>
             <p className="section-kicker">Setup</p>
-            <h2 id="org-form-title">Name the first workspace boundary</h2>
+            <h2 id="org-form-title">Create an organization</h2>
           </div>
           <button
             className="button button-outline"
@@ -145,77 +123,6 @@ export function OrganizationSetupPage({
             disabled={busy}
             onChange={(event) => setOrganizationName(event.target.value)}
           />
-
-          <label htmlFor="workspace-name">Workspace</label>
-          <input
-            id="workspace-name"
-            name="workspace"
-            placeholder="Operations"
-            value={workspaceName}
-            disabled={busy}
-            onChange={(event) => setWorkspaceName(event.target.value)}
-          />
-
-          <fieldset className="runtime-fieldset">
-            <legend>Runtime mode</legend>
-            <div className="segmented-control" role="group" aria-label="Runtime mode">
-              <button
-                className={runtimeMode === "kubernetes" ? "active" : ""}
-                disabled={busy}
-                type="button"
-                onClick={() => setRuntimeMode("kubernetes")}
-              >
-                Kubernetes
-              </button>
-              <button
-                className={runtimeMode === "docker" ? "active" : ""}
-                disabled={busy}
-                type="button"
-                onClick={() => setRuntimeMode("docker")}
-              >
-                Docker
-              </button>
-            </div>
-          </fieldset>
-
-          {runtimeMode === "docker" ? (
-            <>
-              <label htmlFor="docker-api-url">Docker API URL</label>
-              <input
-                id="docker-api-url"
-                name="docker-api-url"
-                placeholder="https://docker.example.com:2376"
-                value={dockerApiUrl}
-                disabled={busy}
-                onChange={(event) => setDockerApiUrl(event.target.value)}
-              />
-              <label className="checkbox-row" htmlFor="allow-insecure-docker">
-                <input
-                  id="allow-insecure-docker"
-                  checked={allowInsecureDocker}
-                  disabled={busy}
-                  type="checkbox"
-                  onChange={(event) =>
-                    setAllowInsecureDocker(event.target.checked)
-                  }
-                />
-                <span>Allow local HTTP endpoint</span>
-              </label>
-            </>
-          ) : (
-            <>
-              <label htmlFor="kubeconfig">Kubeconfig</label>
-              <textarea
-                id="kubeconfig"
-                name="kubeconfig"
-                placeholder="apiVersion: v1&#10;kind: Config&#10;current-context: operations"
-                rows={8}
-                value={kubeconfig}
-                disabled={busy}
-                onChange={(event) => setKubeconfig(event.target.value)}
-              />
-            </>
-          )}
 
           <button className="button button-primary" disabled={busy} type="submit">
             {busy ? "Creating" : "Create organization"}
