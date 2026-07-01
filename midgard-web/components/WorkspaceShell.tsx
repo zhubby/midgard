@@ -157,6 +157,14 @@ function userInitials(value: string) {
   return initials || "U";
 }
 
+function sessionTabText(session: AgentSessionSummary, index: number) {
+  if (session.has_pending_approval) return "!";
+  const title = session.title.trim();
+  if (!title) return String(index + 1);
+
+  return String(index + 1);
+}
+
 function reduceWorkspace(
   state: WorkspaceState,
   action: WorkspaceAction,
@@ -653,6 +661,57 @@ export function WorkspaceShell({
           </span>
         </div>
 
+        <nav
+          aria-label="Agent sessions"
+          aria-orientation="vertical"
+          className="workspace-session-rail"
+          role="tablist"
+        >
+          <button
+            aria-label="New session"
+            className="session-rail-action"
+            disabled={state.busy || !canOperate}
+            title="New session"
+            type="button"
+            onClick={handleNewSession}
+          >
+            +
+          </button>
+          <button
+            aria-label="Live state"
+            aria-selected={!state.activeSessionId}
+            className={`session-rail-tab ${
+              !state.activeSessionId ? "active" : ""
+            }`}
+            disabled={state.busy}
+            role="tab"
+            title={`Live state / ${state.connectionStatus}`}
+            type="button"
+            onClick={() => handleSessionSelect("")}
+          >
+            L
+          </button>
+          {state.sessions.map((session, index) => (
+            <button
+              aria-label={session.title || `Session ${index + 1}`}
+              aria-selected={state.activeSessionId === session.id}
+              className={`session-rail-tab ${
+                state.activeSessionId === session.id ? "active" : ""
+              } ${session.has_pending_approval ? "warn" : ""}`}
+              disabled={state.busy}
+              key={session.id}
+              role="tab"
+              title={`${session.title || `Session ${index + 1}`} / ${
+                session.status
+              }`}
+              type="button"
+              onClick={() => handleSessionSelect(session.id)}
+            >
+              {sessionTabText(session, index)}
+            </button>
+          ))}
+        </nav>
+
         <div className="workspace-user-menu">
           <button
             aria-expanded={userMenuOpen}
@@ -736,7 +795,6 @@ export function WorkspaceShell({
         }
       >
         <AgentConsole
-          activeSessionId={state.activeSessionId}
           busy={state.busy}
           canOperate={canOperate}
           connectionStatus={state.connectionStatus}
@@ -745,12 +803,9 @@ export function WorkspaceShell({
           messages={state.messages}
           onApproval={handleApproval}
           onDraftChange={setDraft}
-          onNewSession={handleNewSession}
           onSend={handleSend}
-          onSessionSelect={handleSessionSelect}
           pendingApproval={state.pendingApproval}
           runStatus={state.runStatus}
-          sessions={state.sessions}
           streamingAssistant={state.streamingAssistant}
           trace={state.trace}
         />

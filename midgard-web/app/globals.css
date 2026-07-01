@@ -624,73 +624,68 @@ textarea:focus-visible {
   padding: 14px 20px 0;
 }
 
-.session-tabs-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 10px;
-  align-items: center;
-  padding: 10px 16px 0;
-}
-
-.session-tabs {
+.workspace-session-rail {
   display: flex;
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+  flex-direction: column;
   gap: 8px;
-  min-width: 0;
-  overflow-x: auto;
-  padding-bottom: 2px;
+  overflow: auto;
+  padding: 2px 0;
 }
 
-.session-tab {
+.session-rail-action,
+.session-rail-tab {
   display: grid;
   flex: 0 0 auto;
-  gap: 3px;
-  width: min(220px, 44vw);
-  min-height: 44px;
+  width: 100%;
+  height: 38px;
+  place-items: center;
   border: 1px solid hsl(var(--border));
   border-radius: calc(var(--radius) - 2px);
   background: hsl(var(--background));
   color: hsl(var(--foreground));
   cursor: pointer;
-  padding: 7px 10px;
-  text-align: left;
+  font-size: 0.82rem;
+  font-weight: 720;
+  line-height: 1;
+  padding: 0;
+  transition:
+    background-color 150ms ease,
+    border-color 150ms ease,
+    color 150ms ease;
 }
 
-.session-tab.active,
-.session-tab:hover {
+.session-rail-action {
+  color: hsl(var(--muted-foreground));
+  font-size: 1.15rem;
+}
+
+.session-rail-tab.active,
+.session-rail-action:hover,
+.session-rail-tab:hover {
   border-color: hsl(var(--primary) / 0.22);
   background: hsl(var(--primary));
   color: hsl(var(--primary-foreground));
 }
 
-.session-tab:disabled {
+.session-rail-tab.warn {
+  border-color: hsl(var(--warning) / 0.34);
+  background: hsl(var(--warning) / 0.12);
+  color: hsl(32 95% 34%);
+}
+
+.session-rail-tab.warn.active,
+.session-rail-tab.warn:hover {
+  background: hsl(var(--warning));
+  color: hsl(var(--foreground));
+}
+
+.session-rail-action:disabled,
+.session-rail-tab:disabled {
   cursor: not-allowed;
   opacity: 0.56;
-}
-
-.session-tab span,
-.session-tab small {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.session-tab span {
-  font-size: 0.82rem;
-  font-weight: 650;
-  line-height: 1.2;
-}
-
-.session-tab small {
-  color: hsl(var(--muted-foreground));
-  font-size: 0.72rem;
-  font-weight: 650;
-  line-height: 1;
-  text-transform: uppercase;
-}
-
-.session-tab.active small,
-.session-tab:hover small {
-  color: hsl(var(--primary-foreground) / 0.74);
 }
 
 .workspace-shell .quick-prompts {
@@ -1879,12 +1874,9 @@ select {
     gap: 10px;
   }
 
-  .session-tabs-row {
-    grid-template-columns: 1fr;
-  }
-
-  .session-tab {
-    width: 168px;
+  .session-rail-action,
+  .session-rail-tab {
+    height: 34px;
   }
 
   .app-shell {

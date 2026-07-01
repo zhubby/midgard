@@ -4,7 +4,6 @@ import { type FormEvent } from "react";
 import type {
   AgentMessage,
   AgentRunStatus,
-  AgentSessionSummary,
   PendingApproval,
 } from "@/lib/types";
 import type { WorkspaceConnectionStatus } from "@/lib/events";
@@ -27,13 +26,9 @@ interface AgentConsoleProps {
   messages: AgentMessage[];
   onApproval: (decision: "approve" | "reject") => void;
   onDraftChange: (draft: string) => void;
-  onNewSession: () => void;
   onSend: (prompt: string) => void;
-  onSessionSelect: (sessionId: string) => void;
   pendingApproval: PendingApproval | null;
   runStatus: AgentRunStatus | "idle";
-  activeSessionId: string | null;
-  sessions: AgentSessionSummary[];
   streamingAssistant: string;
   trace: AgentTraceItem[];
 }
@@ -89,24 +84,15 @@ export function AgentConsole({
   messages,
   onApproval,
   onDraftChange,
-  onNewSession,
   onSend,
-  onSessionSelect,
   pendingApproval,
   runStatus,
-  activeSessionId,
-  sessions,
   streamingAssistant,
   trace,
 }: AgentConsoleProps) {
   function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     onSend(draft);
-  }
-
-  function sessionTabLabel(session: AgentSessionSummary) {
-    const title = session.title.trim() || "Untitled session";
-    return title.length > 40 ? `${title.slice(0, 39)}...` : title;
   }
 
   const traceItems =
@@ -129,51 +115,6 @@ export function AgentConsole({
           <h2 id="agent-title">Plan, inspect, and gate operations</h2>
         </div>
         <span className="badge badge-secondary">{runStatus}</span>
-      </div>
-
-      <div className="session-tabs-row" aria-label="Agent sessions">
-        <div className="session-tabs" role="tablist" aria-label="Agent sessions">
-          <button
-            aria-selected={!activeSessionId}
-            className={`session-tab ${!activeSessionId ? "active" : ""}`}
-            disabled={busy}
-            role="tab"
-            type="button"
-            onClick={() => onSessionSelect("")}
-          >
-            <span>Live state</span>
-            <small>{connectionStatus}</small>
-          </button>
-          {sessions.map((session) => (
-            <button
-              aria-selected={activeSessionId === session.id}
-              className={`session-tab ${
-                activeSessionId === session.id ? "active" : ""
-              }`}
-              disabled={busy}
-              key={session.id}
-              role="tab"
-              title={session.title}
-              type="button"
-              onClick={() => onSessionSelect(session.id)}
-            >
-              <span>{sessionTabLabel(session)}</span>
-              <small>
-                {session.has_pending_approval
-                  ? "approval"
-                  : `${session.message_count} msg`}
-              </small>
-            </button>
-          ))}
-        </div>
-        <button
-          className="button button-outline"
-          disabled={busy || !canOperate}
-          type="button"
-          onClick={onNewSession}
-        >
-          New session
-        </button>
       </div>
 
       <div className="quick-prompts" aria-label="Prompt shortcuts">
