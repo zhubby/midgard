@@ -1383,6 +1383,18 @@ select {
   white-space: normal;
 }
 
+.runtime-summary.compact.settings-runtime-summary {
+  grid-template-columns: 1fr;
+}
+
+.runtime-summary.compact.settings-runtime-summary > div {
+  min-height: 82px;
+}
+
+.runtime-summary.compact.settings-runtime-summary strong {
+  max-width: 100%;
+}
+
 .metric-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));

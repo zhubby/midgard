@@ -111,6 +111,27 @@ impl LeaseGuard {
         }
     }
 
+    pub async fn release(&self) -> OperatorResult<()> {
+        let api = self.api();
+        let Some(mut lease) = api.get_opt(&self.config.name).await? else {
+            return Ok(());
+        };
+        let spec = lease.spec.clone().unwrap_or_default();
+        if !matches!(self.decision(&spec), LeaseDecision::Renew) {
+            return Ok(());
+        }
+
+        lease.spec = Some(released_lease_spec(spec));
+        match api
+            .replace(&self.config.name, &PostParams::default(), &lease)
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(kube::Error::Api(err)) if err.code == 409 => Ok(()),
+            Err(err) => Err(err.into()),
+        }
+    }
+
     async fn acquire_once(&self) -> OperatorResult<()> {
         let api = self.api();
         let Some(mut lease) = api.get_opt(&self.config.name).await? else {
@@ -227,6 +248,13 @@ impl LeaseGuard {
     }
 }
 
+fn released_lease_spec(mut spec: LeaseSpec) -> LeaseSpec {
+    spec.holder_identity = None;
+    spec.acquire_time = None;
+    spec.renew_time = None;
+    spec
+}
+
 fn now_micro_time() -> MicroTime {
     MicroTime(k8s_openapi::jiff::Timestamp::now())
 }
@@ -237,4 +265,28 @@ fn now_unix_seconds() -> i64 {
 
 fn micro_time_unix_seconds(value: &MicroTime) -> i64 {
     value.0.as_second()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn released_lease_spec_clears_holder_identity_and_timestamps() {
+        let now = now_micro_time();
+        let released = released_lease_spec(LeaseSpec {
+            acquire_time: Some(now.clone()),
+            holder_identity: Some("midgard-valkey-operator".to_string()),
+            lease_duration_seconds: Some(15),
+            lease_transitions: Some(3),
+            renew_time: Some(now),
+            ..LeaseSpec::default()
+        });
+
+        assert_eq!(released.holder_identity, None);
+        assert_eq!(released.acquire_time, None);
+        assert_eq!(released.renew_time, None);
+        assert_eq!(released.lease_duration_seconds, Some(15));
+        assert_eq!(released.lease_transitions, Some(3));
+    }
 }

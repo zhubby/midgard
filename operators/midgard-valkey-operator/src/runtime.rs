@@ -13,7 +13,8 @@ use midgard_core::{CapabilityDescriptor, RiskLevel};
 use midgard_operator::controller::root_api;
 use midgard_operator::probe::start_probe_servers;
 use midgard_operator::traits::OperatorDefinition;
-use tokio::time::sleep;
+use tokio::sync::watch;
+use tokio::time::{sleep, timeout};
 use uuid::Uuid;
 
 use crate::api::{ValkeyCluster, ValkeyNode};
@@ -21,6 +22,8 @@ use crate::controller::{Context, cluster, node};
 use crate::error::{Error, Result};
 use crate::lease::{LeaseConfig, LeaseGuard};
 use crate::protocol::{self, VALKEY_MIDDLEWARE_KIND};
+
+const LEASE_RELEASE_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Debug)]
 pub struct ValkeyOperatorConfig {
@@ -135,13 +138,28 @@ impl Default for ValkeyOperatorConfig {
 
 pub async fn run(config: ValkeyOperatorConfig) -> Result<()> {
     config.validate()?;
+    let shutdown = shutdown_listener();
     start_internal_servers(&config)?;
-    let client = Client::try_default().await?;
+    let client = {
+        let mut shutdown = shutdown.clone();
+        tokio::select! {
+            result = Client::try_default() => result?,
+            _ = shutdown.cancelled() => return Ok(()),
+        }
+    };
 
     loop {
         let holder_identity = format!("{}-{}", config.operator_id(), Uuid::new_v4());
-        let guard =
-            acquire_lock_with_retry(client.clone(), config.lease.clone(), holder_identity).await?;
+        let Some(guard) = acquire_lock_with_retry(
+            client.clone(),
+            config.lease.clone(),
+            holder_identity,
+            shutdown.clone(),
+        )
+        .await?
+        else {
+            return Ok(());
+        };
         tracing::info!(
             holder_identity = %guard.holder_identity(),
             lease_namespace = %config.lease.namespace,
@@ -149,13 +167,15 @@ pub async fn run(config: ValkeyOperatorConfig) -> Result<()> {
             "acquired valkey operator lease"
         );
 
-        match run_locked(config.clone(), client.clone(), guard).await {
+        match run_locked(config.clone(), client.clone(), guard, shutdown.clone()).await {
             Ok(LockedRunOutcome::Shutdown) => return Ok(()),
             Ok(LockedRunOutcome::Retry) => {}
             Err(err) => tracing::warn!(error = %err, "valkey operator runtime exited"),
         }
 
-        sleep(config.lease.retry_interval).await;
+        if sleep_or_shutdown(config.lease.retry_interval, shutdown.clone()).await {
+            return Ok(());
+        }
     }
 }
 
@@ -163,10 +183,19 @@ async fn acquire_lock_with_retry(
     client: Client,
     lease: LeaseConfig,
     holder_identity: String,
-) -> Result<LeaseGuard> {
+    shutdown: ShutdownSignal,
+) -> Result<Option<LeaseGuard>> {
     loop {
-        match LeaseGuard::acquire(client.clone(), lease.clone(), holder_identity.clone()).await {
-            Ok(guard) => return Ok(guard),
+        let result = {
+            let mut shutdown = shutdown.clone();
+            tokio::select! {
+                result = LeaseGuard::acquire(client.clone(), lease.clone(), holder_identity.clone()) => result,
+                _ = shutdown.cancelled() => return Ok(None),
+            }
+        };
+
+        match result {
+            Ok(guard) => return Ok(Some(guard)),
             Err(midgard_operator::OperatorError::LeaseHeld(holder)) => {
                 tracing::info!(
                     holder = %holder,
@@ -174,7 +203,9 @@ async fn acquire_lock_with_retry(
                     lease_name = %lease.name,
                     "waiting for valkey operator lease"
                 );
-                sleep(lease.retry_interval).await;
+                if sleep_or_shutdown(lease.retry_interval, shutdown.clone()).await {
+                    return Ok(None);
+                }
             }
             Err(err) => return Err(err.into()),
         }
@@ -190,6 +221,7 @@ async fn run_locked(
     config: ValkeyOperatorConfig,
     client: Client,
     guard: LeaseGuard,
+    mut shutdown: ShutdownSignal,
 ) -> Result<LockedRunOutcome> {
     let controllers = run_controllers(client.clone(), config.watch_namespaces.clone());
     let protocol = protocol::run_channel(config, client);
@@ -208,10 +240,29 @@ async fn run_locked(
             result?;
             Ok(LockedRunOutcome::Retry)
         }
-        _ = shutdown_signal() => {
+        _ = shutdown.cancelled() => {
             tracing::info!("shutdown signal received");
+            release_lease_on_shutdown(guard).await;
             Ok(LockedRunOutcome::Shutdown)
         }
+    }
+}
+
+async fn release_lease_on_shutdown(guard: LeaseGuard) {
+    match timeout(LEASE_RELEASE_TIMEOUT, guard.release()).await {
+        Ok(Ok(())) => tracing::info!("released valkey operator lease"),
+        Ok(Err(err)) => tracing::warn!(error = %err, "failed to release valkey operator lease"),
+        Err(_) => tracing::warn!(
+            timeout_seconds = LEASE_RELEASE_TIMEOUT.as_secs(),
+            "timed out releasing valkey operator lease"
+        ),
+    }
+}
+
+async fn sleep_or_shutdown(duration: Duration, mut shutdown: ShutdownSignal) -> bool {
+    tokio::select! {
+        _ = sleep(duration) => false,
+        _ = shutdown.cancelled() => true,
     }
 }
 
@@ -321,6 +372,51 @@ fn metrics_body() -> String {
     .to_string()
 }
 
+#[derive(Clone)]
+struct ShutdownSignal {
+    receiver: watch::Receiver<bool>,
+}
+
+impl ShutdownSignal {
+    async fn cancelled(&mut self) {
+        if *self.receiver.borrow() {
+            return;
+        }
+
+        while self.receiver.changed().await.is_ok() {
+            if *self.receiver.borrow() {
+                return;
+            }
+        }
+    }
+}
+
+fn shutdown_listener() -> ShutdownSignal {
+    let (sender, receiver) = watch::channel(false);
+    tokio::spawn(async move {
+        shutdown_signal().await;
+        let _ = sender.send(true);
+    });
+    ShutdownSignal { receiver }
+}
+
+#[cfg(unix)]
+async fn shutdown_signal() {
+    match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+        Ok(mut terminate) => {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {},
+                _ = terminate.recv() => {},
+            }
+        }
+        Err(err) => {
+            tracing::warn!(%err, "failed to install SIGTERM handler");
+            let _ = tokio::signal::ctrl_c().await;
+        }
+    }
+}
+
+#[cfg(not(unix))]
 async fn shutdown_signal() {
     let _ = tokio::signal::ctrl_c().await;
 }
@@ -408,5 +504,14 @@ mod tests {
             .unwrap();
 
         assert_eq!(addr.to_string(), "0.0.0.0:8081");
+    }
+
+    #[tokio::test]
+    async fn retry_sleep_can_be_interrupted_by_shutdown() {
+        let (sender, receiver) = watch::channel(false);
+        let shutdown = ShutdownSignal { receiver };
+        sender.send(true).unwrap();
+
+        assert!(sleep_or_shutdown(Duration::from_secs(60), shutdown).await);
     }
 }

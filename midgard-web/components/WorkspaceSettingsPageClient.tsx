@@ -343,7 +343,7 @@ function WorkspaceSettingsRoute({
             <span className="badge badge-outline">{runtime.status}</span>
           </div>
 
-          <div className="runtime-summary compact">
+          <div className="runtime-summary compact settings-runtime-summary">
             <div>
               <span>Mode</span>
               <strong>{runtime.mode ?? "unconfigured"}</strong>
@@ -351,7 +351,7 @@ function WorkspaceSettingsRoute({
             </div>
             <div>
               <span>Endpoint</span>
-              <strong>{runtimeEndpoint}</strong>
+              <strong title={runtimeEndpoint}>{runtimeEndpoint}</strong>
               <p>secret values are not returned</p>
             </div>
             <div className="workspace-uuid">
