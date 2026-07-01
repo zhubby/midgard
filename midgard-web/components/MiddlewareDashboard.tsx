@@ -19,6 +19,7 @@ interface MiddlewareDashboardProps {
   runtimeConfig: WorkspaceRuntimeConfigView;
   settingsHref: string;
   tools: ToolDefinition[];
+  workspaceId: string;
 }
 
 function metricTone(metric: MiddlewareMetric) {
@@ -38,6 +39,7 @@ export function MiddlewareDashboard({
   runtimeConfig,
   settingsHref,
   tools,
+  workspaceId,
 }: MiddlewareDashboardProps) {
   const gatedTools = tools.filter((tool) => tool.requires_approval).length;
   const runtimeLabel = runtimeConfig.mode ?? "unconfigured";
@@ -75,6 +77,11 @@ export function MiddlewareDashboard({
           <span>Status</span>
           <strong>{runtimeConfig.status}</strong>
           <p>{runtimeConfig.updated_at ?? "not configured"}</p>
+        </div>
+        <div className="workspace-uuid">
+          <span>Workspace UUID</span>
+          <strong title={workspaceId}>{workspaceId}</strong>
+          <p>Use for operator startup</p>
         </div>
         {canManageWorkspace && (
           <a className="button button-outline" href={settingsHref}>

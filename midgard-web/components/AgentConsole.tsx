@@ -1,7 +1,15 @@
 "use client";
 
 import { type FormEvent } from "react";
-import { CheckCircle2, Send, Sparkles, XCircle } from "lucide-react";
+import {
+  AlertTriangle,
+  Braces,
+  CheckCircle2,
+  Send,
+  Sparkles,
+  Wrench,
+  XCircle,
+} from "lucide-react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type {
@@ -116,6 +124,104 @@ function MarkdownContent({ content }: { content: string }) {
   );
 }
 
+function toolResultStatus(traceItem?: AgentTraceItem) {
+  if (traceItem?.tone === "warn") {
+    return {
+      label: "Needs attention",
+      tone: "warn",
+      icon: <AlertTriangle aria-hidden="true" />,
+    };
+  }
+
+  if (traceItem?.tone === "ready") {
+    return {
+      label: "Completed",
+      tone: "ready",
+      icon: <CheckCircle2 aria-hidden="true" />,
+    };
+  }
+
+  return {
+    label: "Result",
+    tone: "neutral",
+    icon: <Wrench aria-hidden="true" />,
+  };
+}
+
+function parseToolOutput(content: string) {
+  const trimmed = content.trim();
+
+  if (!trimmed) {
+    return { kind: "empty" as const, value: "No output returned." };
+  }
+
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+
+    if (typeof parsed === "string") {
+      return { kind: "text" as const, value: parsed };
+    }
+
+    return { kind: "json" as const, value: JSON.stringify(parsed, null, 2) };
+  } catch {
+    return { kind: "text" as const, value: content };
+  }
+}
+
+function ToolResultCard({
+  message,
+  traceItem,
+}: {
+  message: AgentMessage;
+  traceItem?: AgentTraceItem;
+}) {
+  const status = toolResultStatus(traceItem);
+  const output = parseToolOutput(message.content);
+  const callId = message.tool_call_id ?? "untracked";
+  const shortCallId =
+    callId.length > 16 ? `${callId.slice(0, 12)}...` : callId;
+
+  return (
+    <div
+      aria-label={`${traceItem?.label ?? "Tool"} execution result`}
+      className={`tool-result-card ${status.tone}`}
+      role="group"
+    >
+      <div className="tool-result-header">
+        <span className="tool-result-icon">{status.icon}</span>
+        <div className="tool-result-heading">
+          <span>Tool execution</span>
+          <strong>{traceItem?.label ?? "Tool result"}</strong>
+        </div>
+        <span className={`tool-result-status ${status.tone}`}>
+          {status.label}
+        </span>
+      </div>
+
+      <div className="tool-result-meta-row">
+        <span>Call id</span>
+        <code title={callId}>{shortCallId}</code>
+      </div>
+
+      <div className={`tool-result-body ${output.kind}`}>
+        {output.kind === "json" ? (
+          <>
+            <div className="tool-result-code-label">
+              <Braces aria-hidden="true" />
+              JSON output
+            </div>
+            <pre>
+              <code>{output.value}</code>
+            </pre>
+          </>
+        ) : (
+          <p>{output.value}</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function MessageContent({ message }: { message: AgentMessage }) {
   const content = message.content || "Tool call requested.";
 
@@ -145,18 +251,6 @@ export function AgentConsole({
     e.preventDefault();
     onSend(draft);
   }
-
-  const traceItems =
-    trace.length > 0
-      ? trace
-      : [
-          {
-            id: "waiting",
-            label: "Waiting for events",
-            detail: "Submit an operations goal to start a live agent run.",
-            tone: "pending" as const,
-          },
-        ];
 
   return (
     <section className="workspace-panel agent-panel" aria-labelledby="agent-title">
@@ -213,23 +307,35 @@ export function AgentConsole({
           </article>
         )}
 
-        {messages.map((message, index) => (
-          <article
-            className={`chat-message ${message.role}`}
-            key={`${message.role}-${message.tool_call_id ?? index}-${index}`}
-          >
-            <span className="message-avatar" aria-hidden="true">
-              {messageAvatar(message.role)}
-            </span>
-            <div>
-              <div className="message-meta">
-                <span>{messageLabel(message)}</span>
-                <small>{messageMeta(message)}</small>
+        {messages.map((message, index) => {
+          const toolTraceItem = message.tool_call_id
+            ? trace.find((step) => step.id === message.tool_call_id)
+            : undefined;
+
+          return (
+            <article
+              className={`chat-message ${message.role}`}
+              key={`${message.role}-${message.tool_call_id ?? index}-${index}`}
+            >
+              <span className="message-avatar" aria-hidden="true">
+                {messageAvatar(message.role)}
+              </span>
+              <div>
+                {message.role === "tool" ? (
+                  <ToolResultCard message={message} traceItem={toolTraceItem} />
+                ) : (
+                  <>
+                    <div className="message-meta">
+                      <span>{messageLabel(message)}</span>
+                      <small>{messageMeta(message)}</small>
+                    </div>
+                    <MessageContent message={message} />
+                  </>
+                )}
               </div>
-              <MessageContent message={message} />
-            </div>
-          </article>
-        ))}
+            </article>
+          );
+        })}
 
         {streamingAssistant && (
           <article className="chat-message assistant streaming">
@@ -247,28 +353,12 @@ export function AgentConsole({
         )}
       </div>
 
-      <section className="trace-panel" aria-labelledby="trace-title">
-        <div className="trace-header">
-          <h3 id="trace-title">Execution trace</h3>
-          <span className="badge badge-outline">{traceItems.length} steps</span>
-        </div>
-        <ol className="trace-list">
-          {traceItems.map((step) => (
-            <li className={`trace-step ${step.tone}`} key={step.id}>
-              <span aria-hidden="true" />
-              <div>
-                <strong>{step.label}</strong>
-                <p>{step.detail}</p>
-              </div>
-            </li>
-          ))}
-        </ol>
-
-        {pendingApproval && (
+      {pendingApproval && (
+        <section className="approval-region" aria-labelledby="approval-title">
           <article className="approval-card">
             <div>
               <p className="section-kicker">Approval required</p>
-              <h3>{pendingApproval.tool_call.name}</h3>
+              <h3 id="approval-title">{pendingApproval.tool_call.name}</h3>
               <p>
                 {pendingApproval.risk_level} risk action awaiting operator
                 decision.
@@ -295,8 +385,8 @@ export function AgentConsole({
               </button>
             </div>
           </article>
-        )}
-      </section>
+        </section>
+      )}
 
       <form className="composer" onSubmit={handleSubmit}>
         <label className="sr-only" htmlFor="agent-message">

@@ -6,8 +6,7 @@ use midgard_config::{
     load_or_create,
 };
 use midgard_server::{
-    AuthSettings, OperatorControlService, OperatorRegistrationToken, OperatorRegistry,
-    WorkspaceCredentialSettings,
+    AuthSettings, OperatorControlService, OperatorRegistry, WorkspaceCredentialSettings,
     app_state_with_provider_auth_orgs_credentials_and_operator_registry, app_with_state,
 };
 use midgard_storage::{
@@ -145,9 +144,6 @@ struct ValkeyOperatorArgs {
     #[arg(long, env = "MIDGARD_WORKSPACE_ID")]
     workspace_id: String,
 
-    #[arg(long, env = "MIDGARD_OPERATOR_TOKEN")]
-    registration_token: String,
-
     #[arg(long, env = "MIDGARD_OPERATOR_ID")]
     operator_id: Option<String>,
 
@@ -240,7 +236,6 @@ async fn run_valkey_operator(args: ValkeyOperatorArgs) -> Result<()> {
     let config = midgard_valkey_operator::ValkeyOperatorConfig {
         server_endpoint: args.server_endpoint,
         workspace_id: args.workspace_id,
-        registration_token: args.registration_token,
         operator_id: args.operator_id,
         watch_namespaces: args.watch_namespace,
         tls_ca_path: args.tls_ca_path,
@@ -292,7 +287,7 @@ async fn run_server(config_path: Option<&Path>, project_root: Option<&Path>) -> 
     let workspace_credentials = WorkspaceCredentialSettings::new(Some(
         loaded.config.secrets.workspace_credentials_key.clone(),
     ));
-    let operator_registry = operator_registry_from_config(&loaded.config.operator_control);
+    let operator_registry = OperatorRegistry::new();
     let app_state = app_state_with_provider_auth_orgs_credentials_and_operator_registry(
         store.clone(),
         store.clone(),
@@ -381,21 +376,6 @@ fn operator_bind_address(
     })
 }
 
-fn operator_registry_from_config(config: &OperatorControlConfig) -> OperatorRegistry {
-    OperatorRegistry::new(
-        config
-            .registration_tokens
-            .iter()
-            .map(|token| {
-                OperatorRegistrationToken::new(
-                    token.workspace_id.trim().to_string(),
-                    token.token.trim().to_string(),
-                )
-            })
-            .collect(),
-    )
-}
-
 fn operator_grpc_server(config: &OperatorControlConfig) -> Result<GrpcServer> {
     let server = GrpcServer::builder();
     if config.allow_insecure_without_tls {
@@ -424,12 +404,8 @@ fn server_startup_summary(
 ) -> String {
     let operator_status = match operator_address {
         Some(address) => format!(
-            "enabled on {address} ({}, {})",
+            "enabled on {address} ({})",
             operator_security_label(&config.operator_control),
-            pluralize_count(
-                config.operator_control.registration_tokens.len(),
-                "registration token"
-            ),
         ),
         None => "disabled".to_string(),
     };
@@ -520,14 +496,6 @@ fn operator_security_label(config: &OperatorControlConfig) -> &'static str {
         "insecure"
     } else {
         "tls"
-    }
-}
-
-fn pluralize_count(count: usize, label: &str) -> String {
-    if count == 1 {
-        format!("{count} {label}")
-    } else {
-        format!("{count} {label}s")
     }
 }
 
@@ -713,8 +681,6 @@ mod tests {
             "http://127.0.0.1:8081",
             "--workspace-id",
             "11111111-1111-1111-1111-111111111111",
-            "--registration-token",
-            "secret",
             "--allow-insecure-without-tls",
             "--watch-namespace",
             "data,cache",
@@ -729,7 +695,6 @@ mod tests {
         let OperatorCommand::Valkey(args) = *command;
         assert_eq!(args.server_endpoint, "http://127.0.0.1:8081");
         assert_eq!(args.workspace_id, "11111111-1111-1111-1111-111111111111");
-        assert_eq!(args.registration_token, "secret");
         assert!(args.allow_insecure_without_tls);
         assert_eq!(args.watch_namespace, vec!["data", "cache"]);
         assert_eq!(args.health_probe_bind_address.as_deref(), Some(":8081"));
@@ -751,11 +716,6 @@ mod tests {
         config.auth.cookie_name = "midgard_session".to_string();
         config.operator_control.enabled = true;
         config.operator_control.allow_insecure_without_tls = true;
-        config.operator_control.registration_tokens =
-            vec![midgard_config::OperatorRegistrationTokenConfig {
-                workspace_id: "11111111-1111-1111-1111-111111111111".to_string(),
-                token: "operator-secret".to_string(),
-            }];
 
         let summary = server_startup_summary(
             &config,
@@ -779,11 +739,10 @@ mod tests {
         assert!(summary.contains("applied from /tmp/midgard/midgard-storage/toasty"));
         assert!(summary.contains("Project root"));
         assert!(summary.contains("Operator gRPC"));
-        assert!(summary.contains("enabled on 127.0.0.1:8081 (insecure, 1 registration token)"));
+        assert!(summary.contains("enabled on 127.0.0.1:8081 (insecure)"));
         assert!(!summary.contains("postgres://"));
         assert!(!summary.contains("sk-secret"));
         assert!(!summary.contains("workspace-secret"));
-        assert!(!summary.contains("operator-secret"));
     }
 
     #[tokio::test]

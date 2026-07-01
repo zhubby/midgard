@@ -29,25 +29,8 @@ use uuid::Uuid;
 
 use crate::{AppError, AppState, publish_middleware_instance_change, storage_app_error};
 
-pub const OPERATOR_TOKEN_METADATA: &str = "x-midgard-operator-token";
-
 type OperatorResponseStream =
     Pin<Box<dyn Stream<Item = Result<ServerToOperator, Status>> + Send + 'static>>;
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct OperatorRegistrationToken {
-    pub workspace_id: String,
-    pub token: String,
-}
-
-impl OperatorRegistrationToken {
-    pub fn new(workspace_id: impl Into<String>, token: impl Into<String>) -> Self {
-        Self {
-            workspace_id: workspace_id.into(),
-            token: token.into(),
-        }
-    }
-}
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct OperatorConnectionSnapshot {
@@ -75,7 +58,6 @@ pub struct OperatorRegistry {
 
 #[derive(Default)]
 struct OperatorRegistryState {
-    tokens_by_workspace: BTreeMap<String, String>,
     connections: BTreeMap<OperatorKey, OperatorConnectionState>,
 }
 
@@ -97,33 +79,11 @@ struct OperatorConnectionState {
 }
 
 impl OperatorRegistry {
-    pub fn new(tokens: Vec<OperatorRegistrationToken>) -> Self {
-        let tokens_by_workspace = tokens
-            .into_iter()
-            .filter(|token| !token.workspace_id.is_empty() && !token.token.is_empty())
-            .map(|token| (token.workspace_id, token.token))
-            .collect();
-
-        Self {
-            inner: Arc::new(Mutex::new(OperatorRegistryState {
-                tokens_by_workspace,
-                connections: BTreeMap::new(),
-            })),
-        }
+    pub fn new() -> Self {
+        Self::default()
     }
 
-    pub fn has_registration_tokens(&self) -> bool {
-        self.inner
-            .lock()
-            .map(|state| !state.tokens_by_workspace.is_empty())
-            .unwrap_or(false)
-    }
-
-    fn validate_registration(
-        &self,
-        token: &str,
-        registration: &OperatorRegistration,
-    ) -> Result<(), Status> {
+    fn validate_registration(&self, registration: &OperatorRegistration) -> Result<(), Status> {
         if registration.protocol_version != OPERATOR_PROTOCOL_VERSION {
             return Err(Status::failed_precondition(format!(
                 "unsupported operator protocol version: {}",
@@ -136,23 +96,11 @@ impl OperatorRegistry {
         if registration.workspace_id.trim().is_empty() {
             return Err(Status::invalid_argument("workspace_id is required"));
         }
+        if Uuid::parse_str(&registration.workspace_id).is_err() {
+            return Err(Status::invalid_argument("workspace_id must be a UUID"));
+        }
         if registration.middleware_kind.trim().is_empty() {
             return Err(Status::invalid_argument("middleware_kind is required"));
-        }
-
-        let state = self
-            .inner
-            .lock()
-            .map_err(|_| Status::internal("operator registry lock poisoned"))?;
-        let Some(expected_token) = state.tokens_by_workspace.get(&registration.workspace_id) else {
-            return Err(Status::permission_denied(
-                "workspace does not accept operator registrations",
-            ));
-        };
-        if expected_token != token {
-            return Err(Status::unauthenticated(
-                "invalid operator registration token",
-            ));
         }
 
         Ok(())
@@ -160,11 +108,10 @@ impl OperatorRegistry {
 
     fn register(
         &self,
-        token: &str,
         registration: OperatorRegistration,
         sender: mpsc::Sender<ServerToOperator>,
     ) -> Result<OperatorConnectionLease, Status> {
-        self.validate_registration(token, &registration)?;
+        self.validate_registration(&registration)?;
 
         let key = OperatorKey {
             workspace_id: registration.workspace_id.clone(),
@@ -494,7 +441,6 @@ impl OperatorControl for OperatorControlService {
         &self,
         request: Request<Streaming<OperatorToServer>>,
     ) -> Result<Response<Self::OpenChannelStream>, Status> {
-        let token = metadata_token(request.metadata())?;
         let mut inbound = request.into_inner();
         let Some(first_message) = inbound.message().await? else {
             return Err(Status::invalid_argument(
@@ -509,10 +455,10 @@ impl OperatorControl for OperatorControlService {
         };
 
         let (sender, receiver) = mpsc::channel(64);
-        let lease =
-            self.state
-                .operator_registry
-                .register(&token, registration.clone(), sender.clone())?;
+        let lease = self
+            .state
+            .operator_registry
+            .register(registration.clone(), sender.clone())?;
         sender
             .send(ServerToOperator {
                 request_id: first_message.request_id,
@@ -548,15 +494,6 @@ impl OperatorControl for OperatorControlService {
             ReceiverStream::new(receiver).map(Ok),
         )))
     }
-}
-
-fn metadata_token(metadata: &tonic::metadata::MetadataMap) -> Result<String, Status> {
-    metadata
-        .get(OPERATOR_TOKEN_METADATA)
-        .ok_or_else(|| Status::unauthenticated("missing operator registration token"))?
-        .to_str()
-        .map(str::to_string)
-        .map_err(|_| Status::unauthenticated("operator registration token must be ASCII"))
 }
 
 pub fn command_for_instance(
@@ -1533,26 +1470,33 @@ mod tests {
     }
 
     #[test]
-    fn registry_rejects_bad_registration_token() {
-        let registry = OperatorRegistry::new(vec![OperatorRegistrationToken::new(
-            Uuid::nil().to_string(),
-            "secret",
-        )]);
+    fn registry_rejects_incomplete_registration() {
+        let registry = OperatorRegistry::new();
+        let mut registration = registration("operator-1");
+        registration.workspace_id.clear();
 
-        let result = registry.validate_registration("wrong", &registration("operator-1"));
+        let result = registry.validate_registration(&registration);
 
-        assert_eq!(result.unwrap_err().code(), tonic::Code::Unauthenticated);
+        assert_eq!(result.unwrap_err().code(), tonic::Code::InvalidArgument);
+    }
+
+    #[test]
+    fn registry_rejects_registration_with_non_uuid_workspace() {
+        let registry = OperatorRegistry::new();
+        let mut registration = registration("operator-1");
+        registration.workspace_id = "not-a-uuid".to_string();
+
+        let result = registry.validate_registration(&registration);
+
+        assert_eq!(result.unwrap_err().code(), tonic::Code::InvalidArgument);
     }
 
     #[test]
     fn registry_tracks_valid_registration_and_disconnect() {
-        let registry = OperatorRegistry::new(vec![OperatorRegistrationToken::new(
-            Uuid::nil().to_string(),
-            "secret",
-        )]);
+        let registry = OperatorRegistry::new();
         let (sender, _receiver) = mpsc::channel(1);
         let lease = registry
-            .register("secret", registration("operator-1"), sender)
+            .register(registration("operator-1"), sender)
             .unwrap();
 
         let snapshot = registry.snapshots().pop().unwrap();
@@ -1567,13 +1511,10 @@ mod tests {
 
     #[test]
     fn registry_preserves_capability_metadata_and_defaults_unknown_risk_to_critical() {
-        let registry = OperatorRegistry::new(vec![OperatorRegistrationToken::new(
-            Uuid::nil().to_string(),
-            "secret",
-        )]);
+        let registry = OperatorRegistry::new();
         let (sender, _receiver) = mpsc::channel(1);
         let _lease = registry
-            .register("secret", registration("operator-1"), sender)
+            .register(registration("operator-1"), sender)
             .unwrap();
 
         registry.update_capabilities(
@@ -1603,17 +1544,14 @@ mod tests {
 
     #[test]
     fn registry_rejects_duplicate_kind_from_different_operator() {
-        let registry = OperatorRegistry::new(vec![OperatorRegistrationToken::new(
-            Uuid::nil().to_string(),
-            "secret",
-        )]);
+        let registry = OperatorRegistry::new();
         let (sender, _receiver) = mpsc::channel(1);
         let _lease = registry
-            .register("secret", registration("operator-1"), sender)
+            .register(registration("operator-1"), sender)
             .unwrap();
         let (sender, _receiver) = mpsc::channel(1);
 
-        match registry.register("secret", registration("operator-2"), sender) {
+        match registry.register(registration("operator-2"), sender) {
             Ok(_) => panic!("duplicate operator registration should fail"),
             Err(err) => assert_eq!(err.code(), tonic::Code::AlreadyExists),
         }
@@ -1719,14 +1657,10 @@ mod tests {
             })
             .await
             .unwrap();
-        let registry = OperatorRegistry::new(vec![OperatorRegistrationToken::new(
-            workspace_id.to_string(),
-            "secret",
-        )]);
+        let registry = OperatorRegistry::new();
         let (sender, _receiver) = mpsc::channel(4);
         let _lease = registry
             .register(
-                "secret",
                 OperatorRegistration {
                     protocol_version: OPERATOR_PROTOCOL_VERSION,
                     operator_id: "operator-1".to_string(),
@@ -1788,14 +1722,10 @@ mod tests {
     async fn operator_capability_list_filters_connected_capabilities_by_workspace_and_kind() {
         let workspace_id = Uuid::new_v4();
         let other_workspace_id = Uuid::new_v4();
-        let registry = OperatorRegistry::new(vec![
-            OperatorRegistrationToken::new(workspace_id.to_string(), "secret"),
-            OperatorRegistrationToken::new(other_workspace_id.to_string(), "secret"),
-        ]);
+        let registry = OperatorRegistry::new();
         let (sender, _receiver) = mpsc::channel(4);
         let _lease = registry
             .register(
-                "secret",
                 registration_for("operator-1", workspace_id, "valkey", ["query"]),
                 sender,
             )
@@ -1811,7 +1741,6 @@ mod tests {
         let (sender, _receiver) = mpsc::channel(4);
         let _other_lease = registry
             .register(
-                "secret",
                 registration_for("operator-2", other_workspace_id, "redis", ["query"]),
                 sender,
             )
@@ -1876,14 +1805,10 @@ mod tests {
     #[tokio::test]
     async fn operator_capability_execute_rejects_unknown_capability_and_unsupported_operation() {
         let workspace_id = Uuid::new_v4();
-        let registry = OperatorRegistry::new(vec![OperatorRegistrationToken::new(
-            workspace_id.to_string(),
-            "secret",
-        )]);
+        let registry = OperatorRegistry::new();
         let (sender, _receiver) = mpsc::channel(4);
         let _lease = registry
             .register(
-                "secret",
                 registration_for("operator-1", workspace_id, "valkey", ["create"]),
                 sender,
             )
@@ -1953,14 +1878,10 @@ mod tests {
             })
             .await
             .unwrap();
-        let registry = OperatorRegistry::new(vec![OperatorRegistrationToken::new(
-            workspace_id.to_string(),
-            "secret",
-        )]);
+        let registry = OperatorRegistry::new();
         let (sender, _receiver) = mpsc::channel(4);
         let _lease = registry
             .register(
-                "secret",
                 registration_for("operator-1", workspace_id, "valkey", ["update"]),
                 sender,
             )
@@ -2032,14 +1953,10 @@ mod tests {
         })
         .await
         .unwrap();
-        let registry = OperatorRegistry::new(vec![OperatorRegistrationToken::new(
-            workspace_id.to_string(),
-            "secret",
-        )]);
+        let registry = OperatorRegistry::new();
         let (sender, mut receiver) = mpsc::channel(8);
         let _lease = registry
             .register(
-                "secret",
                 registration_for(
                     "operator-1",
                     workspace_id,
@@ -2138,14 +2055,10 @@ mod tests {
     async fn operator_capability_execute_persists_state_and_dispatches_commands() {
         let workspace_id = Uuid::new_v4();
         let orgs = Arc::new(MemoryOrganizationStore::new());
-        let registry = OperatorRegistry::new(vec![OperatorRegistrationToken::new(
-            workspace_id.to_string(),
-            "secret",
-        )]);
+        let registry = OperatorRegistry::new();
         let (sender, mut receiver) = mpsc::channel(8);
         let _lease = registry
             .register(
-                "secret",
                 registration_for(
                     "operator-1",
                     workspace_id,

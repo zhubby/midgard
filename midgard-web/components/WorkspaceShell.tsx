@@ -816,6 +816,7 @@ export function WorkspaceShell({
           runtimeConfig={state.runtimeConfig}
           settingsHref={`/orgs/${orgSlug}/workspaces/${workspaceSlug}/settings`}
           tools={state.tools}
+          workspaceId={workspace.id}
         />
       </section>
     </main>

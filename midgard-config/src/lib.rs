@@ -78,7 +78,6 @@ pub struct OperatorControlConfig {
     pub tls_cert_path: String,
     pub tls_key_path: String,
     pub allow_insecure_without_tls: bool,
-    pub registration_tokens: Vec<OperatorRegistrationTokenConfig>,
 }
 
 impl Default for OperatorControlConfig {
@@ -89,7 +88,6 @@ impl Default for OperatorControlConfig {
             tls_cert_path: String::new(),
             tls_key_path: String::new(),
             allow_insecure_without_tls: false,
-            registration_tokens: Vec::new(),
         }
     }
 }
@@ -98,21 +96,6 @@ impl OperatorControlConfig {
     pub fn validate_for_startup(&self) -> MidgardResult<()> {
         if !self.enabled {
             return Ok(());
-        }
-        if self.registration_tokens.is_empty() {
-            return Err(MidgardError::Configuration(
-                "operator_control.registration_tokens must contain at least one workspace token when operator control is enabled".to_string(),
-            ));
-        }
-        if self
-            .registration_tokens
-            .iter()
-            .any(|token| token.workspace_id.trim().is_empty() || token.token.trim().is_empty())
-        {
-            return Err(MidgardError::Configuration(
-                "operator_control.registration_tokens entries require workspace_id and token"
-                    .to_string(),
-            ));
         }
         if !self.allow_insecure_without_tls
             && (self.tls_cert_path.trim().is_empty() || self.tls_key_path.trim().is_empty())
@@ -124,12 +107,6 @@ impl OperatorControlConfig {
 
         Ok(())
     }
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct OperatorRegistrationTokenConfig {
-    pub workspace_id: String,
-    pub token: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -156,7 +133,7 @@ impl Default for AuthConfig {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SecretsConfig {
     pub workspace_credentials_key: String,
 }
@@ -167,14 +144,6 @@ impl SecretsConfig {
         OsRng.fill_bytes(&mut key);
         Self {
             workspace_credentials_key: URL_SAFE_NO_PAD.encode(key),
-        }
-    }
-}
-
-impl Default for SecretsConfig {
-    fn default() -> Self {
-        Self {
-            workspace_credentials_key: String::new(),
         }
     }
 }
@@ -313,13 +282,6 @@ mod tests {
         assert_eq!(loaded.config.server.bind_address, "0.0.0.0:8080");
         assert!(!loaded.config.operator_control.enabled);
         assert_eq!(loaded.config.operator_control.bind_address, "0.0.0.0:8081");
-        assert!(
-            loaded
-                .config
-                .operator_control
-                .registration_tokens
-                .is_empty()
-        );
         assert!(loaded.path.exists());
     }
 
@@ -410,20 +372,12 @@ mod tests {
     }
 
     #[test]
-    fn enabled_operator_control_requires_tokens_and_tls_by_default() {
+    fn enabled_operator_control_requires_tls_by_default() {
         let mut config = OperatorControlConfig {
             enabled: true,
             ..OperatorControlConfig::default()
         };
 
-        assert!(config.validate_for_startup().is_err());
-
-        config
-            .registration_tokens
-            .push(OperatorRegistrationTokenConfig {
-                workspace_id: "workspace-id".to_string(),
-                token: "secret".to_string(),
-            });
         assert!(config.validate_for_startup().is_err());
 
         config.allow_insecure_without_tls = true;

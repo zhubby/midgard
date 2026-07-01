@@ -16,7 +16,6 @@ use tokio::sync::mpsc;
 use tokio::time::sleep;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::Request;
-use tonic::metadata::MetadataValue;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint};
 use uuid::Uuid;
 
@@ -25,7 +24,6 @@ use crate::controller::apply;
 use crate::error::{Error, Result};
 use crate::runtime::ValkeyOperatorConfig;
 
-pub const MIDGARD_OPERATOR_TOKEN_METADATA: &str = "x-midgard-operator-token";
 pub const VALKEY_MIDDLEWARE_KIND: &str = "valkey";
 pub const LABEL_WORKSPACE_ID: &str = "midgard.io/workspace-id";
 pub const LABEL_MIDDLEWARE_ID: &str = "midgard.io/middleware-id";
@@ -47,14 +45,7 @@ pub async fn run_channel(config: ValkeyOperatorConfig, client: Client) -> Result
         .await
         .map_err(|_| Error::InvalidState("operator capability stream closed".to_string()))?;
 
-    let mut request = Request::new(ReceiverStream::new(receiver));
-    let token = MetadataValue::try_from(config.registration_token.as_str()).map_err(|err| {
-        Error::InvalidConfig(format!("registration token is not valid metadata: {err}"))
-    })?;
-    request
-        .metadata_mut()
-        .insert(MIDGARD_OPERATOR_TOKEN_METADATA, token);
-
+    let request = Request::new(ReceiverStream::new(receiver));
     let mut inbound = control.open_channel(request).await?.into_inner();
     let heartbeat_sender = sender.clone();
     let heartbeat_config = config.clone();

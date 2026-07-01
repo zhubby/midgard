@@ -47,8 +47,7 @@ pub use auth::{
     RegisterRequest, UpdateAuthUserRequest,
 };
 pub use operator::{
-    OPERATOR_TOKEN_METADATA, OperatorConnectionSnapshot, OperatorControlService,
-    OperatorDispatchOutcome, OperatorRegistrationToken, OperatorRegistry,
+    OperatorConnectionSnapshot, OperatorControlService, OperatorDispatchOutcome, OperatorRegistry,
 };
 pub use runtime::WorkspaceCredentialSettings;
 pub use workspace::{

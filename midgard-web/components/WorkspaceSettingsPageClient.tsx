@@ -6,9 +6,11 @@ import {
   Archive,
   ArrowLeft,
   LogOut,
+  Pencil,
   Play,
   Plus,
   Save,
+  X,
 } from "lucide-react";
 import { AuthGate } from "@/components/AuthGate";
 import {
@@ -85,6 +87,8 @@ function WorkspaceSettingsRoute({
   const [dockerApiUrl, setDockerApiUrl] = useState("");
   const [allowInsecureDocker, setAllowInsecureDocker] = useState(false);
   const [kubeconfig, setKubeconfig] = useState("");
+  const [editingRuntime, setEditingRuntime] = useState(false);
+  const [addingInstance, setAddingInstance] = useState(false);
   const [instanceKind, setInstanceKind] = useState("redis");
   const [instanceName, setInstanceName] = useState("");
   const [instanceNamespace, setInstanceNamespace] = useState("default");
@@ -95,6 +99,10 @@ function WorkspaceSettingsRoute({
   useEffect(() => {
     let cancelled = false;
     setState({ status: "loading", context: null, workspace: null, instances: [] });
+    setEditingRuntime(false);
+    setAddingInstance(false);
+    setDockerApiUrl("");
+    setKubeconfig("");
     Promise.all([
       fetchOrganizationContext(orgSlug),
       fetchWorkspace(orgSlug, workspaceSlug),
@@ -146,6 +154,7 @@ function WorkspaceSettingsRoute({
       setState({ ...state, workspace });
       setDockerApiUrl("");
       setKubeconfig("");
+      setEditingRuntime(false);
     } catch (caught) {
       setError(
         caught instanceof Error ? caught.message : "Failed to save runtime.",
@@ -153,6 +162,23 @@ function WorkspaceSettingsRoute({
     } finally {
       setBusy(false);
     }
+  }
+
+  function startRuntimeEdit() {
+    if (state.status !== "ready") return;
+    const runtime = state.workspace.runtime_config;
+    setRuntimeMode(runtime.mode ?? "kubernetes");
+    setAllowInsecureDocker(runtime.docker?.insecure_allowed ?? false);
+    setDockerApiUrl("");
+    setKubeconfig("");
+    setEditingRuntime(true);
+  }
+
+  function cancelRuntimeEdit() {
+    if (busy) return;
+    setDockerApiUrl("");
+    setKubeconfig("");
+    setEditingRuntime(false);
   }
 
   async function handleInstanceSubmit(event: FormEvent<HTMLFormElement>) {
@@ -180,6 +206,7 @@ function WorkspaceSettingsRoute({
       });
       setInstanceName("");
       setInstanceConfig("{}");
+      setAddingInstance(false);
     } catch (caught) {
       setError(
         caught instanceof Error ? caught.message : "Failed to save instance.",
@@ -187,6 +214,13 @@ function WorkspaceSettingsRoute({
     } finally {
       setBusy(false);
     }
+  }
+
+  function cancelInstanceAdd() {
+    if (busy) return;
+    setInstanceName("");
+    setInstanceConfig("{}");
+    setAddingInstance(false);
   }
 
   async function setInstanceStatus(
@@ -252,6 +286,11 @@ function WorkspaceSettingsRoute({
 
   const canManage = state.context.permissions.includes("workspaces.manage");
   const runtime = state.workspace.runtime_config;
+  const runtimeEndpoint =
+    runtime.docker?.endpoint_host ??
+    runtime.kubernetes?.cluster_server_host ??
+    runtime.kubernetes?.context_name ??
+    "--";
 
   return (
     <main className="settings-shell">
@@ -295,7 +334,7 @@ function WorkspaceSettingsRoute({
       )}
 
       <section className="settings-grid">
-        <form className="settings-panel" onSubmit={handleRuntimeSubmit}>
+        <section className="settings-panel">
           <div className="section-row">
             <div>
               <p className="section-kicker">Runtime</p>
@@ -312,82 +351,127 @@ function WorkspaceSettingsRoute({
             </div>
             <div>
               <span>Endpoint</span>
-              <strong>
-                {runtime.docker?.endpoint_host ??
-                  runtime.kubernetes?.cluster_server_host ??
-                  runtime.kubernetes?.context_name ??
-                  "--"}
-              </strong>
+              <strong>{runtimeEndpoint}</strong>
               <p>secret values are not returned</p>
+            </div>
+            <div className="workspace-uuid">
+              <span>Workspace UUID</span>
+              <strong title={state.workspace.id}>{state.workspace.id}</strong>
+              <p>Use for operator startup</p>
             </div>
           </div>
 
-          <fieldset className="runtime-fieldset" disabled={!canManage || busy}>
-            <legend>Runtime mode</legend>
-            <div className="segmented-control" role="group">
-              <button
-                className={runtimeMode === "kubernetes" ? "active" : ""}
-                type="button"
-                onClick={() => setRuntimeMode("kubernetes")}
-              >
-                Kubernetes
-              </button>
-              <button
-                className={runtimeMode === "docker" ? "active" : ""}
-                type="button"
-                onClick={() => setRuntimeMode("docker")}
-              >
-                Docker
-              </button>
-            </div>
-          </fieldset>
-
-          {runtimeMode === "docker" ? (
-            <>
-              <label htmlFor="settings-docker-url">Docker API URL</label>
-              <input
-                id="settings-docker-url"
-                placeholder="https://docker.example.com:2376"
-                value={dockerApiUrl}
-                disabled={!canManage || busy}
-                onChange={(event) => setDockerApiUrl(event.target.value)}
-              />
-              <label className="checkbox-row" htmlFor="settings-insecure-docker">
-                <input
-                  id="settings-insecure-docker"
-                  checked={allowInsecureDocker}
-                  disabled={!canManage || busy}
-                  type="checkbox"
-                  onChange={(event) =>
-                    setAllowInsecureDocker(event.target.checked)
-                  }
-                />
-                <span>Allow local HTTP endpoint</span>
-              </label>
-            </>
-          ) : (
-            <>
-              <label htmlFor="settings-kubeconfig">Kubeconfig</label>
-              <textarea
-                id="settings-kubeconfig"
-                placeholder="apiVersion: v1&#10;kind: Config"
-                rows={10}
-                value={kubeconfig}
-                disabled={!canManage || busy}
-                onChange={(event) => setKubeconfig(event.target.value)}
-              />
-            </>
+          {!editingRuntime && (
+            <button
+              className="button button-outline"
+              disabled={!canManage || busy}
+              type="button"
+              onClick={startRuntimeEdit}
+            >
+              <Pencil aria-hidden="true" />
+              Edit runtime
+            </button>
           )}
 
-          <button
-            className="button button-primary"
-            disabled={!canManage || busy}
-            type="submit"
-          >
-            <Save aria-hidden="true" />
-            {busy ? "Saving" : "Save runtime"}
-          </button>
-        </form>
+          {editingRuntime && (
+            <form className="settings-form runtime-edit-form" onSubmit={handleRuntimeSubmit}>
+              <div className="section-row runtime-edit-heading">
+                <div>
+                  <p className="section-kicker">Edit runtime</p>
+                  <h3>Connection credentials</h3>
+                </div>
+                <button
+                  className="button button-ghost"
+                  disabled={busy}
+                  type="button"
+                  onClick={cancelRuntimeEdit}
+                >
+                  <X aria-hidden="true" />
+                  Cancel
+                </button>
+              </div>
+
+              <fieldset className="runtime-fieldset" disabled={!canManage || busy}>
+                <legend>Runtime mode</legend>
+                <div className="segmented-control" role="group">
+                  <button
+                    className={runtimeMode === "kubernetes" ? "active" : ""}
+                    type="button"
+                    onClick={() => setRuntimeMode("kubernetes")}
+                  >
+                    Kubernetes
+                  </button>
+                  <button
+                    className={runtimeMode === "docker" ? "active" : ""}
+                    type="button"
+                    onClick={() => setRuntimeMode("docker")}
+                  >
+                    Docker
+                  </button>
+                </div>
+              </fieldset>
+
+              {runtimeMode === "docker" ? (
+                <>
+                  <label htmlFor="settings-docker-url">Docker API URL</label>
+                  <input
+                    id="settings-docker-url"
+                    placeholder="https://docker.example.com:2376"
+                    value={dockerApiUrl}
+                    disabled={!canManage || busy}
+                    onChange={(event) => setDockerApiUrl(event.target.value)}
+                  />
+                  <label
+                    className="checkbox-row"
+                    htmlFor="settings-insecure-docker"
+                  >
+                    <input
+                      id="settings-insecure-docker"
+                      checked={allowInsecureDocker}
+                      disabled={!canManage || busy}
+                      type="checkbox"
+                      onChange={(event) =>
+                        setAllowInsecureDocker(event.target.checked)
+                      }
+                    />
+                    <span>Allow local HTTP endpoint</span>
+                  </label>
+                </>
+              ) : (
+                <>
+                  <label htmlFor="settings-kubeconfig">Kubeconfig</label>
+                  <textarea
+                    id="settings-kubeconfig"
+                    placeholder="apiVersion: v1&#10;kind: Config"
+                    rows={10}
+                    value={kubeconfig}
+                    disabled={!canManage || busy}
+                    onChange={(event) => setKubeconfig(event.target.value)}
+                  />
+                </>
+              )}
+
+              <div className="settings-action-row">
+                <button
+                  className="button button-primary"
+                  disabled={!canManage || busy}
+                  type="submit"
+                >
+                  <Save aria-hidden="true" />
+                  {busy ? "Saving" : "Save runtime"}
+                </button>
+                <button
+                  className="button button-outline"
+                  disabled={busy}
+                  type="button"
+                  onClick={cancelRuntimeEdit}
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>
+          )}
+        </section>
 
         <section className="settings-panel">
           <div className="section-row">
@@ -395,49 +479,74 @@ function WorkspaceSettingsRoute({
               <p className="section-kicker">Middleware</p>
               <h2>Instances</h2>
             </div>
-            <span className="badge badge-outline">{state.instances.length}</span>
+            <div className="section-actions">
+              <span className="badge badge-outline">{state.instances.length}</span>
+              {!addingInstance && (
+                <button
+                  className="button button-outline"
+                  disabled={!canManage || busy}
+                  type="button"
+                  onClick={() => setAddingInstance(true)}
+                >
+                  <Plus aria-hidden="true" />
+                  Add instance
+                </button>
+              )}
+            </div>
           </div>
 
-          <form className="instance-form" onSubmit={handleInstanceSubmit}>
-            <label htmlFor="instance-kind">Kind</label>
-            <input
-              id="instance-kind"
-              value={instanceKind}
-              disabled={!canManage || busy}
-              onChange={(event) => setInstanceKind(event.target.value)}
-            />
-            <label htmlFor="instance-name">Name</label>
-            <input
-              id="instance-name"
-              placeholder="cache"
-              value={instanceName}
-              disabled={!canManage || busy}
-              onChange={(event) => setInstanceName(event.target.value)}
-            />
-            <label htmlFor="instance-namespace">Namespace</label>
-            <input
-              id="instance-namespace"
-              value={instanceNamespace}
-              disabled={!canManage || busy}
-              onChange={(event) => setInstanceNamespace(event.target.value)}
-            />
-            <label htmlFor="instance-config">Config JSON</label>
-            <textarea
-              id="instance-config"
-              rows={5}
-              value={instanceConfig}
-              disabled={!canManage || busy}
-              onChange={(event) => setInstanceConfig(event.target.value)}
-            />
-            <button
-              className="button button-primary"
-              disabled={!canManage || busy}
-              type="submit"
-            >
-              <Plus aria-hidden="true" />
-              Add instance
-            </button>
-          </form>
+          {addingInstance && (
+            <form className="instance-form" onSubmit={handleInstanceSubmit}>
+              <label htmlFor="instance-kind">Kind</label>
+              <input
+                id="instance-kind"
+                value={instanceKind}
+                disabled={!canManage || busy}
+                onChange={(event) => setInstanceKind(event.target.value)}
+              />
+              <label htmlFor="instance-name">Name</label>
+              <input
+                id="instance-name"
+                placeholder="cache"
+                value={instanceName}
+                disabled={!canManage || busy}
+                onChange={(event) => setInstanceName(event.target.value)}
+              />
+              <label htmlFor="instance-namespace">Namespace</label>
+              <input
+                id="instance-namespace"
+                value={instanceNamespace}
+                disabled={!canManage || busy}
+                onChange={(event) => setInstanceNamespace(event.target.value)}
+              />
+              <label htmlFor="instance-config">Config JSON</label>
+              <textarea
+                id="instance-config"
+                rows={5}
+                value={instanceConfig}
+                disabled={!canManage || busy}
+                onChange={(event) => setInstanceConfig(event.target.value)}
+              />
+              <div className="settings-action-row">
+                <button
+                  className="button button-primary"
+                  disabled={!canManage || busy}
+                  type="submit"
+                >
+                  <Plus aria-hidden="true" />
+                  Add instance
+                </button>
+                <button
+                  className="button button-outline"
+                  disabled={busy}
+                  type="button"
+                  onClick={cancelInstanceAdd}
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>
+          )}
 
           <div className="settings-instance-list">
             {state.instances.map((instance) => (

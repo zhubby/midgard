@@ -65,7 +65,6 @@ spec:
           - valkey
           - --server-endpoint=$(MIDGARD_OPERATOR_ENDPOINT)
           - --workspace-id=$(MIDGARD_WORKSPACE_ID)
-          - --registration-token=$(MIDGARD_OPERATOR_TOKEN)
           - --lock-namespace=$(POD_NAMESPACE)
           - --health-probe-bind-address=:8081
         env:
@@ -80,11 +79,6 @@ spec:
             secretKeyRef:
               name: midgard-valkey-operator-registration
               key: workspace-id
-        - name: MIDGARD_OPERATOR_TOKEN
-          valueFrom:
-            secretKeyRef:
-              name: midgard-valkey-operator-registration
-              key: token
         image: midgard:latest
         name: manager
         ports:

@@ -26,7 +26,6 @@ use crate::protocol::{self, VALKEY_MIDDLEWARE_KIND};
 pub struct ValkeyOperatorConfig {
     pub server_endpoint: String,
     pub workspace_id: String,
-    pub registration_token: String,
     pub operator_id: Option<String>,
     pub watch_namespaces: Vec<String>,
     pub tls_ca_path: Option<PathBuf>,
@@ -54,11 +53,6 @@ impl ValkeyOperatorConfig {
         if Uuid::parse_str(&self.workspace_id).is_err() {
             return Err(Error::InvalidConfig(
                 "workspace id must be a UUID".to_string(),
-            ));
-        }
-        if self.registration_token.trim().is_empty() {
-            return Err(Error::InvalidConfig(
-                "registration token is required".to_string(),
             ));
         }
         if !self.allow_insecure_without_tls && self.server_endpoint.starts_with("http://") {
@@ -127,7 +121,6 @@ impl Default for ValkeyOperatorConfig {
         Self {
             server_endpoint: "https://127.0.0.1:8081".to_string(),
             workspace_id: String::new(),
-            registration_token: String::new(),
             operator_id: None,
             watch_namespaces: Vec::new(),
             tls_ca_path: None,
@@ -356,7 +349,6 @@ mod tests {
         let config = ValkeyOperatorConfig {
             server_endpoint: "http://127.0.0.1:8081".to_string(),
             workspace_id: "11111111-1111-1111-1111-111111111111".to_string(),
-            registration_token: "token".to_string(),
             allow_insecure_without_tls: true,
             ..ValkeyOperatorConfig::default()
         };
@@ -369,7 +361,6 @@ mod tests {
         let config = ValkeyOperatorConfig {
             server_endpoint: "http://127.0.0.1:8081".to_string(),
             workspace_id: "11111111-1111-1111-1111-111111111111".to_string(),
-            registration_token: "token".to_string(),
             ..ValkeyOperatorConfig::default()
         };
 
