@@ -1,5 +1,6 @@
 "use client";
 
+import { LogOut } from "lucide-react";
 import type { AuthUser } from "@/lib/types";
 
 interface NoWorkspaceAccessProps {
@@ -29,11 +30,12 @@ export function NoWorkspaceAccess({
           Ask a Midgard administrator to add this account to an organization.
         </p>
         <button
-          className="button button-outline"
+          className="button button-danger"
           disabled={busyAuth}
           type="button"
           onClick={onLogout}
         >
+          <LogOut aria-hidden="true" />
           Logout
         </button>
       </section>

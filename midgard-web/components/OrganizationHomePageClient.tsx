@@ -1,7 +1,17 @@
 "use client";
 
 import { type FormEvent, useEffect, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
+import {
+  ArrowRight,
+  Building2,
+  LogOut,
+  Plus,
+  Settings2,
+  Shield,
+  Users,
+} from "lucide-react";
 import { AuthGate } from "@/components/AuthGate";
 import { createWorkspace, fetchOrganizationContext } from "@/lib/api";
 import type {
@@ -125,36 +135,41 @@ function OrganizationHomePage({
             <strong>{user.display_name || user.email}</strong>
             <span>{context.membership.role}</span>
           </div>
-          <a className="button button-outline" href="/organizations">
+          <Link className="button button-outline" href="/organizations">
+            <Building2 aria-hidden="true" />
             Organizations
-          </a>
+          </Link>
           {canCreateOrganization && (
-            <a className="button button-outline" href="/organizations/new">
+            <Link className="button button-outline" href="/organizations/new">
+              <Plus aria-hidden="true" />
               New organization
-            </a>
+            </Link>
           )}
           {canManageMembers && (
-            <a
+            <Link
               className="button button-outline"
               href={`/orgs/${context.organization.slug}/settings/members`}
             >
+              <Users aria-hidden="true" />
               Members
-            </a>
+            </Link>
           )}
           {canManageRoles && (
-            <a
+            <Link
               className="button button-outline"
               href={`/orgs/${context.organization.slug}/settings/roles`}
             >
+              <Shield aria-hidden="true" />
               Roles
-            </a>
+            </Link>
           )}
           <button
-            className="button button-outline logout-button"
+            className="button button-danger logout-button"
             disabled={busyAuth}
             type="button"
             onClick={onLogout}
           >
+            <LogOut aria-hidden="true" />
             Logout
           </button>
         </div>
@@ -226,19 +241,21 @@ function WorkspaceListPanel({ context }: { context: OrganizationContext }) {
               </p>
             </div>
             <div>
-              <a
+              <Link
                 className="button button-primary"
                 href={`/orgs/${context.organization.slug}/workspaces/${workspace.slug}`}
               >
+                <ArrowRight aria-hidden="true" />
                 Open
-              </a>
+              </Link>
               {context.permissions.includes("workspaces.manage") && (
-                <a
+                <Link
                   className="button button-outline"
                   href={`/orgs/${context.organization.slug}/workspaces/${workspace.slug}/settings`}
                 >
+                  <Settings2 aria-hidden="true" />
                   Settings
-                </a>
+                </Link>
               )}
             </div>
           </article>
@@ -385,6 +402,7 @@ function WorkspaceCreatePanel({ context }: { context: OrganizationContext }) {
       )}
 
       <button className="button button-primary" disabled={busy} type="submit">
+        <Plus aria-hidden="true" />
         {busy ? "Creating" : "Create workspace"}
       </button>
     </form>

@@ -1,6 +1,16 @@
 "use client";
 
 import {
+  Building2,
+  LogOut,
+  MessageSquareText,
+  Plus,
+  Settings,
+  Shield,
+  ShieldAlert,
+  Users,
+} from "lucide-react";
+import {
   type CSSProperties,
   type KeyboardEvent,
   type PointerEvent,
@@ -9,6 +19,7 @@ import {
   useRef,
   useState,
 } from "react";
+import Link from "next/link";
 import { AgentConsole, type AgentTraceItem } from "@/components/AgentConsole";
 import { MiddlewareDashboard } from "@/components/MiddlewareDashboard";
 import { createSession, decideApproval, runAgent, sendMessage } from "@/lib/api";
@@ -155,66 +166,6 @@ function userInitials(value: string) {
     .join("");
 
   return initials || "U";
-}
-
-function NewSessionIcon() {
-  return (
-    <svg aria-hidden="true" className="session-rail-icon" viewBox="0 0 20 20">
-      <path
-        d="M10 4.5v11M4.5 10h11"
-        fill="none"
-        stroke="currentColor"
-        strokeLinecap="round"
-        strokeWidth="1.8"
-      />
-    </svg>
-  );
-}
-
-function SessionIcon() {
-  return (
-    <svg aria-hidden="true" className="session-rail-icon" viewBox="0 0 20 20">
-      <rect
-        fill="none"
-        height="11"
-        rx="3"
-        stroke="currentColor"
-        strokeWidth="1.6"
-        width="11"
-        x="4.5"
-        y="4.5"
-      />
-      <path
-        d="M7.5 8.2h5M7.5 11.8h3.2"
-        fill="none"
-        stroke="currentColor"
-        strokeLinecap="round"
-        strokeWidth="1.5"
-      />
-    </svg>
-  );
-}
-
-function ApprovalSessionIcon() {
-  return (
-    <svg aria-hidden="true" className="session-rail-icon" viewBox="0 0 20 20">
-      <path
-        d="M10 4.2 16.1 15H3.9L10 4.2Z"
-        fill="none"
-        stroke="currentColor"
-        strokeLinejoin="round"
-        strokeWidth="1.6"
-      />
-      <path
-        d="M10 8.2v3.2"
-        fill="none"
-        stroke="currentColor"
-        strokeLinecap="round"
-        strokeWidth="1.6"
-      />
-      <circle cx="10" cy="13.7" fill="currentColor" r="0.8" />
-    </svg>
-  );
 }
 
 function reduceWorkspace(
@@ -709,7 +660,7 @@ export function WorkspaceShell({
             type="button"
             onClick={handleNewSession}
           >
-            <NewSessionIcon />
+            <Plus aria-hidden="true" className="session-rail-icon" />
           </button>
           {state.sessions.map((session, index) => (
             <button
@@ -728,9 +679,12 @@ export function WorkspaceShell({
               onClick={() => handleSessionSelect(session.id)}
             >
               {session.has_pending_approval ? (
-                <ApprovalSessionIcon />
+                <ShieldAlert aria-hidden="true" className="session-rail-icon" />
               ) : (
-                <SessionIcon />
+                <MessageSquareText
+                  aria-hidden="true"
+                  className="session-rail-icon"
+                />
               )}
             </button>
           ))}
@@ -756,40 +710,45 @@ export function WorkspaceShell({
                   {user.role} / {context.membership.role}
                 </span>
               </div>
-              <a className="user-menu-item" href="/organizations" role="menuitem">
+              <Link className="user-menu-item" href="/organizations" role="menuitem">
+                <Building2 aria-hidden="true" />
                 Organizations
-              </a>
+              </Link>
               {canManageMembers && (
-                <a
+                <Link
                   className="user-menu-item"
                   href={`/orgs/${orgSlug}/settings/members`}
                   role="menuitem"
                 >
+                  <Users aria-hidden="true" />
                   Members
-                </a>
+                </Link>
               )}
               {canManageOrgRoles && (
-                <a
+                <Link
                   className="user-menu-item"
                   href={`/orgs/${orgSlug}/settings/roles`}
                   role="menuitem"
                 >
+                  <Shield aria-hidden="true" />
                   Roles
-                </a>
+                </Link>
               )}
               {canReadSystemAdmin && (
-                <a className="user-menu-item" href="/admin/users" role="menuitem">
+                <Link className="user-menu-item" href="/admin/users" role="menuitem">
+                  <Shield aria-hidden="true" />
                   Admin
-                </a>
+                </Link>
               )}
               {canManageWorkspace && (
-                <a
+                <Link
                   className="user-menu-item"
                   href={`/orgs/${orgSlug}/workspaces/${workspaceSlug}/settings`}
                   role="menuitem"
                 >
+                  <Settings aria-hidden="true" />
                   Workspace
-                </a>
+                </Link>
               )}
               <button
                 className="user-menu-item danger"
@@ -801,6 +760,7 @@ export function WorkspaceShell({
                   onLogout();
                 }}
               >
+                <LogOut aria-hidden="true" />
                 Logout
               </button>
             </div>

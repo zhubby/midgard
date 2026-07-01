@@ -8,6 +8,7 @@ import type {
   ToolDefinition,
   WorkspaceRuntimeConfigView,
 } from "@/lib/types";
+import { Settings2 } from "lucide-react";
 
 interface MiddlewareDashboardProps {
   approvals: ApprovalRecord[];
@@ -77,6 +78,7 @@ export function MiddlewareDashboard({
         </div>
         {canManageWorkspace && (
           <a className="button button-outline" href={settingsHref}>
+            <Settings2 aria-hidden="true" />
             Settings
           </a>
         )}

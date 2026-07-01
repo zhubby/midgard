@@ -2,6 +2,7 @@
 
 import { type FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
+import { LogOut, Plus } from "lucide-react";
 import { NoWorkspaceAccess } from "@/components/NoWorkspaceAccess";
 import { createOrganization } from "@/lib/api";
 import type { AuthUser } from "@/lib/types";
@@ -97,11 +98,12 @@ export function OrganizationSetupPage({
             <h2 id="org-form-title">Create an organization</h2>
           </div>
           <button
-            className="button button-outline"
+            className="button button-danger"
             disabled={busy || busyAuth}
             type="button"
             onClick={onLogout}
           >
+            <LogOut aria-hidden="true" />
             Logout
           </button>
         </div>
@@ -125,6 +127,7 @@ export function OrganizationSetupPage({
           />
 
           <button className="button button-primary" disabled={busy} type="submit">
+            <Plus aria-hidden="true" />
             {busy ? "Creating" : "Create organization"}
           </button>
         </form>

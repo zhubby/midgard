@@ -1,6 +1,15 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
+import {
+  ArrowRight,
+  Building2,
+  LogOut,
+  Plus,
+  Shield,
+  Users,
+} from "lucide-react";
 import { AuthGate } from "@/components/AuthGate";
 import { fetchOrganizationContexts } from "@/lib/api";
 import type {
@@ -105,21 +114,24 @@ function OrganizationsPage({
             <span>{user.email}</span>
           </div>
           {canCreateOrganization && (
-            <a className="button button-primary" href="/organizations/new">
+            <Link className="button button-primary" href="/organizations/new">
+              <Plus aria-hidden="true" />
               New organization
-            </a>
+            </Link>
           )}
           {canReadSystemAdmin && (
-            <a className="button button-outline" href="/admin/users">
+            <Link className="button button-outline" href="/admin/users">
+              <Shield aria-hidden="true" />
               Admin
-            </a>
+            </Link>
           )}
           <button
-            className="button button-outline logout-button"
+            className="button button-danger logout-button"
             disabled={busyAuth}
             type="button"
             onClick={onLogout}
           >
+            <LogOut aria-hidden="true" />
             Logout
           </button>
         </div>
@@ -160,9 +172,10 @@ function OrganizationsPage({
                     : "Ask a Midgard administrator to add this account to an organization."}
                 </p>
                 {canCreateOrganization && (
-                  <a className="button button-primary" href="/organizations/new">
+                  <Link className="button button-primary" href="/organizations/new">
+                    <Plus aria-hidden="true" />
                     Create organization
-                  </a>
+                  </Link>
                 )}
               </div>
             )}
@@ -227,35 +240,43 @@ function OrganizationRow({ context }: { context: OrganizationContext }) {
 
       <div className="instance-actions">
         {workspace ? (
-          <a
+          <Link
             className="button button-primary"
             href={workspaceHref(context.organization.slug, workspace)}
           >
+            <ArrowRight aria-hidden="true" />
             Open workspace
-          </a>
+          </Link>
         ) : (
-          <a className="button button-primary" href={`/orgs/${context.organization.slug}`}>
+          <Link
+            className="button button-primary"
+            href={`/orgs/${context.organization.slug}`}
+          >
+            <Plus aria-hidden="true" />
             Set up workspace
-          </a>
+          </Link>
         )}
-        <a className="button button-outline" href={`/orgs/${context.organization.slug}`}>
+        <Link className="button button-outline" href={`/orgs/${context.organization.slug}`}>
+          <Building2 aria-hidden="true" />
           Organization
-        </a>
+        </Link>
         {canManageMembers && (
-          <a
+          <Link
             className="button button-outline"
             href={`/orgs/${context.organization.slug}/settings/members`}
           >
+            <Users aria-hidden="true" />
             Members
-          </a>
+          </Link>
         )}
         {canManageRoles && (
-          <a
+          <Link
             className="button button-outline"
             href={`/orgs/${context.organization.slug}/settings/roles`}
           >
+            <Shield aria-hidden="true" />
             Roles
-          </a>
+          </Link>
         )}
       </div>
     </article>

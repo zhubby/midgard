@@ -1,6 +1,15 @@
 "use client";
 
 import { type FormEvent, useEffect, useState } from "react";
+import {
+  AlertTriangle,
+  Archive,
+  ArrowLeft,
+  LogOut,
+  Play,
+  Plus,
+  Save,
+} from "lucide-react";
 import { AuthGate } from "@/components/AuthGate";
 import {
   createMiddlewareInstance,
@@ -264,14 +273,16 @@ function WorkspaceSettingsRoute({
             className="button button-outline"
             href={`/orgs/${orgSlug}/workspaces/${workspaceSlug}`}
           >
+            <ArrowLeft aria-hidden="true" />
             Workspace
           </a>
           <button
-            className="button button-outline"
+            className="button button-danger"
             disabled={busyAuth}
             type="button"
             onClick={onLogout}
           >
+            <LogOut aria-hidden="true" />
             Logout
           </button>
         </div>
@@ -373,6 +384,7 @@ function WorkspaceSettingsRoute({
             disabled={!canManage || busy}
             type="submit"
           >
+            <Save aria-hidden="true" />
             {busy ? "Saving" : "Save runtime"}
           </button>
         </form>
@@ -422,6 +434,7 @@ function WorkspaceSettingsRoute({
               disabled={!canManage || busy}
               type="submit"
             >
+              <Plus aria-hidden="true" />
               Add instance
             </button>
           </form>
@@ -438,27 +451,40 @@ function WorkspaceSettingsRoute({
                 <div className="instance-actions">
                   <span className="badge badge-outline">{instance.status}</span>
                   <button
-                    className="button button-outline"
+                    aria-pressed={instance.status === "running"}
+                    className={`button ${
+                      instance.status === "running"
+                        ? "button-active"
+                        : "button-outline"
+                    }`}
                     disabled={!canManage || busy}
                     type="button"
                     onClick={() => setInstanceStatus(instance, "running")}
                   >
+                    <Play aria-hidden="true" />
                     Running
                   </button>
                   <button
-                    className="button button-outline"
+                    aria-pressed={instance.status === "degraded"}
+                    className={`button ${
+                      instance.status === "degraded"
+                        ? "button-warning"
+                        : "button-outline"
+                    }`}
                     disabled={!canManage || busy}
                     type="button"
                     onClick={() => setInstanceStatus(instance, "degraded")}
                   >
+                    <AlertTriangle aria-hidden="true" />
                     Degraded
                   </button>
                   <button
-                    className="button button-outline"
+                    className="button button-danger"
                     disabled={!canManage || busy}
                     type="button"
                     onClick={() => setInstanceStatus(instance, "archive")}
                   >
+                    <Archive aria-hidden="true" />
                     Archive
                   </button>
                 </div>

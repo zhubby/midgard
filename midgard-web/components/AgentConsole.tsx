@@ -1,6 +1,7 @@
 "use client";
 
 import { type FormEvent } from "react";
+import { CheckCircle2, Send, Sparkles, XCircle } from "lucide-react";
 import type {
   AgentMessage,
   AgentRunStatus,
@@ -120,12 +121,13 @@ export function AgentConsole({
       <div className="quick-prompts" aria-label="Prompt shortcuts">
         {quickPrompts.map((prompt) => (
           <button
-            className="button button-ghost prompt-chip"
+            className="button button-secondary button-compact prompt-chip"
             disabled={busy || !canOperate}
             key={prompt}
             type="button"
             onClick={() => onDraftChange(prompt)}
           >
+            <Sparkles aria-hidden="true" />
             {prompt}
           </button>
         ))}
@@ -224,11 +226,12 @@ export function AgentConsole({
             </div>
             <div className="approval-actions">
               <button
-                className="button button-outline"
+                className="button button-danger"
                 disabled={busy || !canOperate}
                 type="button"
                 onClick={() => onApproval("reject")}
               >
+                <XCircle aria-hidden="true" />
                 Reject
               </button>
               <button
@@ -237,6 +240,7 @@ export function AgentConsole({
                 type="button"
                 onClick={() => onApproval("approve")}
               >
+                <CheckCircle2 aria-hidden="true" />
                 Approve
               </button>
             </div>
@@ -268,6 +272,7 @@ export function AgentConsole({
             disabled={busy || !canOperate}
             type="submit"
           >
+            <Send aria-hidden="true" />
             {busy ? "Running" : canOperate ? "Send" : "Read only"}
           </button>
         </div>

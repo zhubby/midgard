@@ -11,6 +11,9 @@ type AuthState =
   | { status: "authenticated"; auth: AuthContext; error: null };
 
 const SESSION_CHECK_TIMEOUT_MS = 1200;
+const AUTH_CACHE_KEY = "midgard.auth.context";
+
+let cachedAuth: AuthContext | null = null;
 
 interface AuthGateProps {
   children: (props: {
@@ -22,48 +25,95 @@ interface AuthGateProps {
 }
 
 export function AuthGate({ children }: AuthGateProps) {
-  const [auth, setAuth] = useState<AuthState>({
-    status: "loading",
-    auth: null,
-    error: null,
+  const [auth, setAuth] = useState<AuthState>(() => {
+    if (cachedAuth) {
+      return { status: "authenticated", auth: cachedAuth, error: null };
+    }
+
+    return { status: "loading", auth: null, error: null };
   });
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
-    let timedOut = false;
-    const controller = new AbortController();
-    const timeoutId = window.setTimeout(() => {
-      if (cancelled) return;
-      timedOut = true;
-      controller.abort();
-      setAuth((current) =>
-        current.status === "loading"
-          ? { status: "anonymous", auth: null, error: null }
-          : current,
-      );
-    }, SESSION_CHECK_TIMEOUT_MS);
+    let requestId = 0;
+    let controller: AbortController | null = null;
+    let timeoutId: number | null = null;
 
-    fetchCurrentUser({ signal: controller.signal })
-      .then((user) => {
-        if (cancelled || timedOut) {
-          return;
-        }
+    function clearPendingCheck() {
+      if (timeoutId !== null) {
         window.clearTimeout(timeoutId);
-        setAuth({ status: "authenticated", auth: user, error: null });
-      })
-      .catch(() => {
-        if (cancelled || timedOut) {
-          return;
+        timeoutId = null;
+      }
+      controller?.abort();
+      controller = null;
+    }
+
+    function checkSession() {
+      if (cancelled) return;
+
+      clearPendingCheck();
+      const cached = readCachedAuth();
+      if (cached) {
+        setAuth({ status: "authenticated", auth: cached, error: null });
+      }
+
+      const currentRequest = requestId + 1;
+      requestId = currentRequest;
+      controller = new AbortController();
+      let timedOut = false;
+
+      timeoutId = window.setTimeout(() => {
+        if (cancelled || currentRequest !== requestId) return;
+
+        timedOut = true;
+        controller?.abort();
+        if (!readCachedAuth()) {
+          setAuth({ status: "anonymous", auth: null, error: null });
         }
-        window.clearTimeout(timeoutId);
-        setAuth({ status: "anonymous", auth: null, error: null });
-      });
+      }, SESSION_CHECK_TIMEOUT_MS);
+
+      fetchCurrentUser({ signal: controller.signal })
+        .then((user) => {
+          if (cancelled || currentRequest !== requestId) {
+            return;
+          }
+          if (timeoutId !== null) {
+            window.clearTimeout(timeoutId);
+            timeoutId = null;
+          }
+          cacheAuth(user);
+          setAuth({ status: "authenticated", auth: user, error: null });
+        })
+        .catch(() => {
+          if (cancelled || currentRequest !== requestId) {
+            return;
+          }
+          if (timeoutId !== null) {
+            window.clearTimeout(timeoutId);
+            timeoutId = null;
+          }
+          if (timedOut && readCachedAuth()) {
+            return;
+          }
+          clearCachedAuth();
+          setAuth({ status: "anonymous", auth: null, error: null });
+        });
+    }
+
+    function handlePageShow(event: PageTransitionEvent) {
+      if (event.persisted) {
+        checkSession();
+      }
+    }
+
+    checkSession();
+    window.addEventListener("pageshow", handlePageShow);
 
     return () => {
       cancelled = true;
-      window.clearTimeout(timeoutId);
-      controller.abort();
+      window.removeEventListener("pageshow", handlePageShow);
+      clearPendingCheck();
     };
   }, []);
 
@@ -74,8 +124,10 @@ export function AuthGate({ children }: AuthGateProps) {
 
     try {
       const user = await login(email, password);
+      cacheAuth(user);
       setAuth({ status: "authenticated", auth: user, error: null });
     } catch {
+      clearCachedAuth();
       setAuth({
         status: "anonymous",
         auth: null,
@@ -101,8 +153,10 @@ export function AuthGate({ children }: AuthGateProps) {
         password,
         display_name: displayName.trim() || null,
       });
+      cacheAuth(user);
       setAuth({ status: "authenticated", auth: user, error: null });
     } catch (caught) {
+      clearCachedAuth();
       setAuth({
         status: "anonymous",
         auth: null,
@@ -121,6 +175,7 @@ export function AuthGate({ children }: AuthGateProps) {
     try {
       await logout();
     } finally {
+      clearCachedAuth();
       setBusy(false);
       setAuth({ status: "anonymous", auth: null, error: null });
     }
@@ -177,4 +232,60 @@ function registrationErrorMessage(message: string) {
   }
 
   return "Unable to create account.";
+}
+
+function cacheAuth(auth: AuthContext) {
+  cachedAuth = auth;
+  if (typeof window === "undefined") return;
+
+  try {
+    window.sessionStorage.setItem(AUTH_CACHE_KEY, JSON.stringify(auth));
+  } catch {
+    // Session storage is an optimization for browser history restores.
+  }
+}
+
+function clearCachedAuth() {
+  cachedAuth = null;
+  if (typeof window === "undefined") return;
+
+  try {
+    window.sessionStorage.removeItem(AUTH_CACHE_KEY);
+  } catch {
+    // Ignore storage failures; auth state is still cleared in memory.
+  }
+}
+
+function readCachedAuth() {
+  if (cachedAuth) return cachedAuth;
+  if (typeof window === "undefined") return null;
+
+  try {
+    const value = window.sessionStorage.getItem(AUTH_CACHE_KEY);
+    if (!value) return null;
+
+    const parsed: unknown = JSON.parse(value);
+    if (isAuthContext(parsed)) {
+      cachedAuth = parsed;
+      return parsed;
+    }
+  } catch {
+    clearCachedAuth();
+  }
+
+  return null;
+}
+
+function isAuthContext(value: unknown): value is AuthContext {
+  if (!value || typeof value !== "object") return false;
+
+  const candidate = value as {
+    user?: { email?: unknown };
+    system_permissions?: unknown;
+  };
+
+  return (
+    typeof candidate.user?.email === "string" &&
+    Array.isArray(candidate.system_permissions)
+  );
 }

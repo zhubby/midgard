@@ -1,6 +1,7 @@
 "use client";
 
 import { type FormEvent, useState } from "react";
+import { LogIn, UserPlus } from "lucide-react";
 
 interface LoginPageProps {
   busy: boolean;
@@ -182,6 +183,11 @@ export function LoginPage({
           )}
 
           <button className="button button-primary" disabled={busy} type="submit">
+            {isRegistering ? (
+              <UserPlus aria-hidden="true" />
+            ) : (
+              <LogIn aria-hidden="true" />
+            )}
             {busy
               ? isRegistering
                 ? "Creating account"

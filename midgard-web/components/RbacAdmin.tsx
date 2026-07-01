@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { ArrowLeft, KeyRound, LogOut, UserPlus } from "lucide-react";
+import { SelectControl } from "@/components/SelectControl";
 import {
   addOrganizationMember,
   createOrganizationRole,
@@ -50,6 +52,13 @@ interface SystemAdminProps {
 
 type LoadState = "loading" | "ready" | "error";
 
+function roleOptions(roles: RbacRole[]) {
+  return roles.map((role) => ({
+    label: role.name,
+    value: role.id,
+  }));
+}
+
 function AdminShell({
   busyAuth,
   title,
@@ -76,14 +85,16 @@ function AdminShell({
             <span>{user.email}</span>
           </div>
           <a className="button button-outline" href="/">
+            <ArrowLeft aria-hidden="true" />
             Workspace
           </a>
           <button
-            className="button button-outline logout-button"
+            className="button button-danger logout-button"
             disabled={busyAuth}
             type="button"
             onClick={onLogout}
           >
+            <LogOut aria-hidden="true" />
             Logout
           </button>
         </div>
@@ -189,14 +200,15 @@ export function SystemUsersAdmin({
             <input placeholder="email@example.com" value={email} onChange={(e) => setEmail(e.target.value)} />
             <input placeholder="Display name" value={displayName} onChange={(e) => setDisplayName(e.target.value)} />
             <input placeholder="Temporary password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
-            <select value={roleId} onChange={(e) => setRoleId(e.target.value)}>
-              {roles.map((role) => (
-                <option key={role.id} value={role.id}>
-                  {role.name}
-                </option>
-              ))}
-            </select>
+            <SelectControl
+              ariaLabel="System role"
+              emptyLabel="No roles available"
+              options={roleOptions(roles)}
+              value={roleId}
+              onChange={setRoleId}
+            />
             <button className="button button-primary" type="submit">
+              <UserPlus aria-hidden="true" />
               Create user
             </button>
           </div>
@@ -218,16 +230,15 @@ export function SystemUsersAdmin({
                   <strong>{account.display_name || account.email}</strong>
                   <span>{account.email}</span>
                 </div>
-                <select
+                <SelectControl
+                  ariaLabel={`${account.display_name || account.email} system role`}
+                  emptyLabel="No roles available"
+                  options={roleOptions(roles)}
                   value={account.system_role_id}
-                  onChange={(e) => handleUpdate(account, e.target.value, account.active)}
-                >
-                  {roles.map((role) => (
-                    <option key={role.id} value={role.id}>
-                      {role.name}
-                    </option>
-                  ))}
-                </select>
+                  onChange={(nextRoleId) =>
+                    handleUpdate(account, nextRoleId, account.active)
+                  }
+                />
                 <label className="toggle-line">
                   <input
                     checked={account.active}
@@ -398,6 +409,7 @@ function RolesAdmin({
             <input placeholder="slug" value={slug} onChange={(e) => setSlug(e.target.value)} />
             <input placeholder="Role name" value={name} onChange={(e) => setName(e.target.value)} />
             <button className="button button-primary" type="submit">
+              <KeyRound aria-hidden="true" />
               Create role
             </button>
           </div>
@@ -539,14 +551,15 @@ export function OrganizationMembersAdmin({
           </div>
           <div className="settings-form">
             <input placeholder="user@example.com" value={email} onChange={(e) => setEmail(e.target.value)} />
-            <select value={roleId} onChange={(e) => setRoleId(e.target.value)}>
-              {roles.map((role) => (
-                <option key={role.id} value={role.id}>
-                  {role.name}
-                </option>
-              ))}
-            </select>
+            <SelectControl
+              ariaLabel="Organization role"
+              emptyLabel="No roles available"
+              options={roleOptions(roles)}
+              value={roleId}
+              onChange={setRoleId}
+            />
             <button className="button button-primary" type="submit">
+              <UserPlus aria-hidden="true" />
               Add member
             </button>
           </div>
@@ -567,18 +580,15 @@ export function OrganizationMembersAdmin({
                   <strong>{member.user.display_name || member.user.email}</strong>
                   <span>{member.user.email}</span>
                 </div>
-                <select
+                <SelectControl
+                  ariaLabel={`${member.user.display_name || member.user.email} organization role`}
+                  emptyLabel="No roles available"
+                  options={roleOptions(roles)}
                   value={member.membership.role_id}
-                  onChange={(e) =>
-                    handleUpdate(member, e.target.value, member.membership.active)
+                  onChange={(nextRoleId) =>
+                    handleUpdate(member, nextRoleId, member.membership.active)
                   }
-                >
-                  {roles.map((role) => (
-                    <option key={role.id} value={role.id}>
-                      {role.name}
-                    </option>
-                  ))}
-                </select>
+                />
                 <label className="toggle-line">
                   <input
                     checked={member.membership.active}
