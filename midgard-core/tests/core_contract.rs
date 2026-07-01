@@ -13,7 +13,10 @@ fn capability_descriptor_marks_approval_for_high_risk_operations() {
 fn platform_config_uses_openai_compatible_defaults() {
     let config = PlatformConfig::for_development();
 
-    assert_eq!(config.llm.base_url, "https://api.openai.com/v1");
+    assert_eq!(
+        config.llm.base_url,
+        "https://api.openai.com/v1/chat/completions"
+    );
     assert_eq!(config.llm.model, "gpt-4o-mini");
 }
 

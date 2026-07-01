@@ -2,6 +2,8 @@
 
 import { type FormEvent } from "react";
 import { CheckCircle2, Send, Sparkles, XCircle } from "lucide-react";
+import ReactMarkdown, { type Components } from "react-markdown";
+import remarkGfm from "remark-gfm";
 import type {
   AgentMessage,
   AgentRunStatus,
@@ -40,6 +42,30 @@ const quickPrompts = [
   "Plan a safe Kafka restart",
 ];
 
+const markdownComponents: Components = {
+  a({ children, href, node, ...props }) {
+    const opensNewTab = Boolean(href) && !href?.startsWith("#");
+
+    return (
+      <a
+        {...props}
+        href={href}
+        rel={opensNewTab ? "noreferrer" : undefined}
+        target={opensNewTab ? "_blank" : undefined}
+      >
+        {children}
+      </a>
+    );
+  },
+  table({ children, node, ...props }) {
+    return (
+      <div className="markdown-table-scroll">
+        <table {...props}>{children}</table>
+      </div>
+    );
+  },
+};
+
 function messageLabel(message: AgentMessage) {
   switch (message.role) {
     case "assistant":
@@ -74,6 +100,30 @@ function messageAvatar(role: AgentMessage["role"]) {
     case "user":
       return "U";
   }
+}
+
+function MarkdownContent({ content }: { content: string }) {
+  return (
+    <div className="markdown-content">
+      <ReactMarkdown
+        components={markdownComponents}
+        remarkPlugins={[remarkGfm]}
+        skipHtml
+      >
+        {content}
+      </ReactMarkdown>
+    </div>
+  );
+}
+
+function MessageContent({ message }: { message: AgentMessage }) {
+  const content = message.content || "Tool call requested.";
+
+  if (message.role === "assistant") {
+    return <MarkdownContent content={content} />;
+  }
+
+  return <p>{content}</p>;
 }
 
 export function AgentConsole({
@@ -176,7 +226,7 @@ export function AgentConsole({
                 <span>{messageLabel(message)}</span>
                 <small>{messageMeta(message)}</small>
               </div>
-              <p>{message.content || "Tool call requested."}</p>
+              <MessageContent message={message} />
             </div>
           </article>
         ))}
@@ -191,7 +241,7 @@ export function AgentConsole({
                 <span>Midgard agent</span>
                 <small>streaming</small>
               </div>
-              <p>{streamingAssistant}</p>
+              <MarkdownContent content={streamingAssistant} />
             </div>
           </article>
         )}

@@ -13,15 +13,15 @@ use midgard_tools::{Tool, ToolDefinition, ToolRegistry, ToolResult};
 use serde_json::{Value, json};
 
 #[test]
-fn provider_builds_openai_compatible_chat_completions_url() {
+fn provider_uses_configured_llm_url_without_appending_path() {
     let provider = OpenAiCompatibleProvider::new(
-        LlmConfig::new("http://gateway.local/v1/", "qwen-max"),
+        LlmConfig::new("http://gateway.local/custom/chat", "qwen-max"),
         "secret",
     );
 
     assert_eq!(
         provider.chat_completions_url(),
-        "http://gateway.local/v1/chat/completions"
+        "http://gateway.local/custom/chat"
     );
     assert_eq!(provider.model(), "qwen-max");
 }

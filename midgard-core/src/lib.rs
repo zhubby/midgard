@@ -111,7 +111,7 @@ pub struct PlatformConfig {
 impl PlatformConfig {
     pub fn for_development() -> Self {
         Self {
-            llm: LlmConfig::new("https://api.openai.com/v1", "gpt-4o-mini"),
+            llm: LlmConfig::new("https://api.openai.com/v1/chat/completions", "gpt-4o-mini"),
         }
     }
 }

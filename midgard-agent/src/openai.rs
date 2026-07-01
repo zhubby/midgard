@@ -28,14 +28,11 @@ impl OpenAiCompatibleProvider {
     }
 
     pub fn chat_completions_url(&self) -> String {
-        format!(
-            "{}/chat/completions",
-            self.config.base_url.trim_end_matches('/')
-        )
+        self.config.base_url.trim().to_string()
     }
 
     pub fn responses_url(&self) -> String {
-        format!("{}/responses", self.config.base_url.trim_end_matches('/'))
+        self.config.base_url.trim().to_string()
     }
 
     pub fn model(&self) -> &str {
@@ -65,10 +62,7 @@ impl OpenAiCompatibleProvider {
     }
 
     fn endpoint_url(&self) -> String {
-        match self.config.api_mode {
-            LlmApiMode::ChatCompletions => self.chat_completions_url(),
-            LlmApiMode::Responses => self.responses_url(),
-        }
+        self.config.base_url.trim().to_string()
     }
 
     fn request_body(&self, request: &LlmRequest, stream: bool) -> Value {

@@ -35,7 +35,7 @@ impl MidgardConfig {
             auth: AuthConfig::default(),
             secrets: SecretsConfig::generated(),
             llm: LlmFileConfig {
-                base_url: "https://api.openai.com/v1".to_string(),
+                base_url: "https://api.openai.com/v1/chat/completions".to_string(),
                 model: "gpt-4o-mini".to_string(),
                 api_mode: LlmApiMode::default(),
                 api_key: String::new(),
@@ -401,7 +401,10 @@ mod tests {
     fn llm_file_config_maps_to_core_llm_config() {
         let config = MidgardConfig::default_for_new_file();
 
-        assert_eq!(config.llm_config().base_url, "https://api.openai.com/v1");
+        assert_eq!(
+            config.llm_config().base_url,
+            "https://api.openai.com/v1/chat/completions"
+        );
         assert_eq!(config.llm_config().model, "gpt-4o-mini");
         assert_eq!(config.llm_config().api_mode, LlmApiMode::ChatCompletions);
     }
