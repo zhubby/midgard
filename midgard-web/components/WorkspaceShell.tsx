@@ -1,6 +1,14 @@
 "use client";
 
-import { useEffect, useReducer, useState } from "react";
+import {
+  type CSSProperties,
+  type KeyboardEvent,
+  type PointerEvent,
+  useEffect,
+  useReducer,
+  useRef,
+  useState,
+} from "react";
 import { AgentConsole, type AgentTraceItem } from "@/components/AgentConsole";
 import { MiddlewareDashboard } from "@/components/MiddlewareDashboard";
 import { createSession, decideApproval, runAgent, sendMessage } from "@/lib/api";
@@ -475,6 +483,8 @@ export function WorkspaceShell({
     "Inspect Redis in the default namespace and report whether it is healthy.",
   );
   const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const [agentPanelWidth, setAgentPanelWidth] = useState(48);
+  const mainGridRef = useRef<HTMLElement | null>(null);
   const orgSlug = context.organization.slug;
   const workspaceSlug = workspace.slug;
   const displayUser = user.display_name || user.email;
@@ -508,6 +518,61 @@ export function WorkspaceShell({
     dispatch({
       type: "select_session",
       sessionId: sessionId || null,
+    });
+  }
+
+  function clampAgentPanelWidth(width: number, containerWidth?: number) {
+    const minAgentPercent = containerWidth
+      ? Math.min(42, (320 / containerWidth) * 100)
+      : 30;
+    const maxAgentPercent = containerWidth
+      ? Math.max(minAgentPercent, 100 - (360 / containerWidth) * 100)
+      : 70;
+
+    return Math.min(maxAgentPercent, Math.max(minAgentPercent, width));
+  }
+
+  function handlePanelResizePointerDown(
+    event: PointerEvent<HTMLButtonElement>,
+  ) {
+    const grid = mainGridRef.current;
+    if (!grid) return;
+
+    event.preventDefault();
+    const rect = grid.getBoundingClientRect();
+
+    function updateWidth(clientX: number) {
+      const nextWidth = ((clientX - rect.left) / rect.width) * 100;
+      setAgentPanelWidth(clampAgentPanelWidth(nextWidth, rect.width));
+    }
+
+    function handlePointerMove(pointerEvent: globalThis.PointerEvent) {
+      updateWidth(pointerEvent.clientX);
+    }
+
+    function handlePointerUp() {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+    }
+
+    updateWidth(event.clientX);
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+  }
+
+  function handlePanelResizeKeyDown(event: KeyboardEvent<HTMLButtonElement>) {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
+      return;
+    }
+
+    event.preventDefault();
+    const step = event.shiftKey ? 8 : 4;
+    setAgentPanelWidth((width) => {
+      if (event.key === "Home") return 32;
+      if (event.key === "End") return 68;
+      return clampAgentPanelWidth(
+        width + (event.key === "ArrowLeft" ? -step : step),
+      );
     });
   }
 
@@ -662,7 +727,13 @@ export function WorkspaceShell({
 
       <section
         className="workspace-main-grid"
+        ref={mainGridRef}
         aria-label="Midgard operations workspace"
+        style={
+          {
+            "--workspace-agent-width": `${agentPanelWidth}%`,
+          } as CSSProperties
+        }
       >
         <AgentConsole
           activeSessionId={state.activeSessionId}
@@ -683,6 +754,20 @@ export function WorkspaceShell({
           streamingAssistant={state.streamingAssistant}
           trace={state.trace}
         />
+        <button
+          aria-label="Resize agent and dashboard panels"
+          aria-orientation="vertical"
+          aria-valuemax={70}
+          aria-valuemin={30}
+          aria-valuenow={Math.round(agentPanelWidth)}
+          className="workspace-resize-handle"
+          role="separator"
+          type="button"
+          onKeyDown={handlePanelResizeKeyDown}
+          onPointerDown={handlePanelResizePointerDown}
+        >
+          <span aria-hidden="true" />
+        </button>
         <MiddlewareDashboard
           approvals={state.approvals}
           canManageWorkspace={canManageWorkspace}

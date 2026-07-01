@@ -479,11 +479,47 @@ textarea:focus-visible {
 
 .workspace-main-grid {
   display: grid;
-  grid-template-columns: minmax(390px, 0.92fr) minmax(460px, 1.08fr);
-  gap: 12px;
+  grid-template-columns:
+    minmax(320px, var(--workspace-agent-width, 48%)) 12px
+    minmax(360px, 1fr);
+  gap: 0;
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+}
+
+.workspace-resize-handle {
+  display: grid;
+  width: 12px;
+  height: 100%;
+  place-items: center;
+  background: transparent;
+  cursor: col-resize;
+  padding: 0;
+  touch-action: none;
+}
+
+.workspace-resize-handle span {
+  width: 2px;
+  height: 56px;
+  border-radius: 999px;
+  background: hsl(var(--border));
+  transition:
+    background-color 150ms ease,
+    box-shadow 150ms ease,
+    height 150ms ease;
+}
+
+.workspace-resize-handle:hover span,
+.workspace-resize-handle:focus-visible span {
+  height: 72px;
+  background: hsl(var(--primary));
+  box-shadow: 0 0 0 4px hsl(var(--primary) / 0.08);
+}
+
+.workspace-resize-handle:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: -2px;
 }
 
 .workspace-shell .workspace-panel {
@@ -1787,7 +1823,9 @@ select {
   }
 
   .workspace-main-grid {
-    grid-template-columns: minmax(360px, 1fr) minmax(380px, 1fr);
+    grid-template-columns:
+      minmax(320px, var(--workspace-agent-width, 48%)) 10px
+      minmax(340px, 1fr);
   }
 
   .workspace-grid {
@@ -1830,7 +1868,9 @@ select {
   }
 
   .workspace-main-grid {
-    grid-template-columns: minmax(320px, 1fr) minmax(340px, 1fr);
+    grid-template-columns:
+      minmax(300px, var(--workspace-agent-width, 48%)) 10px
+      minmax(320px, 1fr);
   }
 
   .workspace-shell .panel-header {
