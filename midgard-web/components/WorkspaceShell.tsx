@@ -135,6 +135,20 @@ function upsertSessionSummary(
   ];
 }
 
+function userInitials(value: string) {
+  const parts = value
+    .replace(/@.*/, "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  const initials = parts
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase())
+    .join("");
+
+  return initials || "U";
+}
+
 function reduceWorkspace(
   state: WorkspaceState,
   action: WorkspaceAction,
@@ -460,11 +474,14 @@ export function WorkspaceShell({
   const [draft, setDraft] = useState(
     "Inspect Redis in the default namespace and report whether it is healthy.",
   );
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
   const orgSlug = context.organization.slug;
   const workspaceSlug = workspace.slug;
+  const displayUser = user.display_name || user.email;
   const canOperate = state.permissions.includes("workspace.operate");
   const canManageOrgRoles = context.permissions.includes("org.roles.read");
   const canManageMembers = context.permissions.includes("org.members.read");
+  const canManageWorkspace = context.permissions.includes("workspaces.manage");
   const canReadSystemAdmin =
     systemPermissions.includes("system.users.read") ||
     systemPermissions.includes("system.roles.read");
@@ -545,66 +562,108 @@ export function WorkspaceShell({
   }
 
   return (
-    <main className="app-shell">
-      <header className="app-header">
-        <div className="brand-lockup">
+    <main className="workspace-shell">
+      <aside className="workspace-sidebar" aria-label="Workspace navigation">
+        <div className="workspace-sidebar-brand" title="Midgard">
           <div className="brand-mark" aria-hidden="true">
             M
           </div>
-          <div>
-            <p className="section-kicker">Midgard</p>
-            <h1>{workspace.name}</h1>
-            <p className="workspace-breadcrumb">
-              {context.organization.name} / {workspace.slug}
-            </p>
-          </div>
         </div>
 
-        <div className="header-actions" aria-label="Workspace state">
-          <span className={`status-pill ${state.connectionStatus}`}>
-            <span aria-hidden="true" />
-            {state.connectionStatus}
-          </span>
-          <div className="user-chip" aria-label="Signed in user">
-            <strong>{user.display_name || user.email}</strong>
-            <span>{user.role}</span>
-            <span>{context.membership.role}</span>
-          </div>
-          {canManageMembers && (
-            <a className="button button-outline" href={`/orgs/${orgSlug}/settings/members`}>
-              Members
-            </a>
-          )}
-          {canManageOrgRoles && (
-            <a className="button button-outline" href={`/orgs/${orgSlug}/settings/roles`}>
-              Roles
-            </a>
-          )}
-          {canReadSystemAdmin && (
-            <a className="button button-outline" href="/admin/users">
-              Admin
-            </a>
-          )}
-          {context.permissions.includes("workspaces.manage") && (
-            <a
-              className="button button-outline"
-              href={`/orgs/${orgSlug}/workspaces/${workspaceSlug}/settings`}
-            >
-              Workspace
-            </a>
-          )}
-          <button
-            className="button button-outline logout-button"
-            disabled={busyAuth}
-            type="button"
-            onClick={onLogout}
+        <div
+          className="workspace-sidebar-workspace"
+          title={`${context.organization.name} / ${workspace.slug}`}
+        >
+          <strong>{workspace.name.slice(0, 3)}</strong>
+          <span>{workspace.slug.slice(0, 3)}</span>
+        </div>
+
+        <div className="workspace-sidebar-status" aria-label="Workspace state">
+          <span
+            aria-label={state.connectionStatus}
+            className={`workspace-status-dot ${state.connectionStatus}`}
+            title={state.connectionStatus}
           >
-            Logout
-          </button>
+            <span aria-hidden="true" />
+          </span>
         </div>
-      </header>
 
-      <section className="workspace-grid" aria-label="Midgard operations workspace">
+        <div className="workspace-user-menu">
+          <button
+            aria-expanded={userMenuOpen}
+            aria-haspopup="menu"
+            className={`user-menu-trigger ${userMenuOpen ? "active" : ""}`}
+            title={displayUser}
+            type="button"
+            onClick={() => setUserMenuOpen((open) => !open)}
+          >
+            <span>{userInitials(displayUser)}</span>
+          </button>
+
+          {userMenuOpen && (
+            <div className="user-menu-popover" role="menu">
+              <div className="user-menu-header">
+                <strong>{displayUser}</strong>
+                <span>
+                  {user.role} / {context.membership.role}
+                </span>
+              </div>
+              <a className="user-menu-item" href="/organizations" role="menuitem">
+                Organizations
+              </a>
+              {canManageMembers && (
+                <a
+                  className="user-menu-item"
+                  href={`/orgs/${orgSlug}/settings/members`}
+                  role="menuitem"
+                >
+                  Members
+                </a>
+              )}
+              {canManageOrgRoles && (
+                <a
+                  className="user-menu-item"
+                  href={`/orgs/${orgSlug}/settings/roles`}
+                  role="menuitem"
+                >
+                  Roles
+                </a>
+              )}
+              {canReadSystemAdmin && (
+                <a className="user-menu-item" href="/admin/users" role="menuitem">
+                  Admin
+                </a>
+              )}
+              {canManageWorkspace && (
+                <a
+                  className="user-menu-item"
+                  href={`/orgs/${orgSlug}/workspaces/${workspaceSlug}/settings`}
+                  role="menuitem"
+                >
+                  Workspace
+                </a>
+              )}
+              <button
+                className="user-menu-item danger"
+                disabled={busyAuth}
+                role="menuitem"
+                type="button"
+                onClick={() => {
+                  setUserMenuOpen(false);
+                  onLogout();
+                }}
+              >
+                Logout
+              </button>
+            </div>
+          )}
+        </div>
+      </aside>
+
+      <section
+        className="workspace-main-grid"
+        aria-label="Midgard operations workspace"
+      >
         <AgentConsole
           activeSessionId={state.activeSessionId}
           busy={state.busy}
@@ -626,7 +685,7 @@ export function WorkspaceShell({
         />
         <MiddlewareDashboard
           approvals={state.approvals}
-          canManageWorkspace={context.permissions.includes("workspaces.manage")}
+          canManageWorkspace={canManageWorkspace}
           instances={state.middlewareInstances}
           middleware={state.middleware}
           plugins={state.plugins}

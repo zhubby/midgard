@@ -104,6 +104,11 @@ export function AgentConsole({
     onSend(draft);
   }
 
+  function sessionTabLabel(session: AgentSessionSummary) {
+    const title = session.title.trim() || "Untitled session";
+    return title.length > 40 ? `${title.slice(0, 39)}...` : title;
+  }
+
   const traceItems =
     trace.length > 0
       ? trace
@@ -126,22 +131,41 @@ export function AgentConsole({
         <span className="badge badge-secondary">{runStatus}</span>
       </div>
 
-      <div className="session-strip" aria-label="Agent sessions">
-        <label className="sr-only" htmlFor="agent-session-select">
-          Agent session
-        </label>
-        <select
-          id="agent-session-select"
-          value={activeSessionId ?? ""}
-          onChange={(event) => onSessionSelect(event.target.value)}
-        >
-          <option value="">Workspace live state</option>
+      <div className="session-tabs-row" aria-label="Agent sessions">
+        <div className="session-tabs" role="tablist" aria-label="Agent sessions">
+          <button
+            aria-selected={!activeSessionId}
+            className={`session-tab ${!activeSessionId ? "active" : ""}`}
+            disabled={busy}
+            role="tab"
+            type="button"
+            onClick={() => onSessionSelect("")}
+          >
+            <span>Live state</span>
+            <small>{connectionStatus}</small>
+          </button>
           {sessions.map((session) => (
-            <option key={session.id} value={session.id}>
-              {session.title.slice(0, 64)} · {session.status}
-            </option>
+            <button
+              aria-selected={activeSessionId === session.id}
+              className={`session-tab ${
+                activeSessionId === session.id ? "active" : ""
+              }`}
+              disabled={busy}
+              key={session.id}
+              role="tab"
+              title={session.title}
+              type="button"
+              onClick={() => onSessionSelect(session.id)}
+            >
+              <span>{sessionTabLabel(session)}</span>
+              <small>
+                {session.has_pending_approval
+                  ? "approval"
+                  : `${session.message_count} msg`}
+              </small>
+            </button>
           ))}
-        </select>
+        </div>
         <button
           className="button button-outline"
           disabled={busy || !canOperate}
