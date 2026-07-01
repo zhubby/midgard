@@ -310,73 +310,6 @@ textarea:focus-visible {
   place-items: center;
 }
 
-.workspace-sidebar-workspace {
-  display: grid;
-  place-items: center;
-  gap: 3px;
-  width: 100%;
-  border: 1px solid hsl(var(--border));
-  border-radius: calc(var(--radius) - 2px);
-  background: hsl(var(--background));
-  padding: 8px 4px;
-}
-
-.workspace-sidebar-workspace strong,
-.workspace-sidebar-workspace span {
-  max-width: 100%;
-  overflow: hidden;
-  line-height: 1;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.workspace-sidebar-workspace strong {
-  font-size: 0.88rem;
-  font-weight: 700;
-}
-
-.workspace-sidebar-workspace span {
-  color: hsl(var(--muted-foreground));
-  font-size: 0.7rem;
-  font-weight: 650;
-  text-transform: uppercase;
-}
-
-.workspace-sidebar-status {
-  display: grid;
-  place-items: center;
-  width: 100%;
-  padding-top: 2px;
-}
-
-.workspace-status-dot {
-  display: grid;
-  width: 34px;
-  height: 34px;
-  place-items: center;
-  border: 1px solid hsl(var(--border));
-  border-radius: calc(var(--radius) - 2px);
-  background: hsl(var(--background));
-}
-
-.workspace-status-dot span {
-  width: 8px;
-  height: 8px;
-  border-radius: 999px;
-  background: hsl(var(--ready));
-  box-shadow: 0 0 0 4px hsl(var(--ready) / 0.14);
-}
-
-.workspace-status-dot.connecting span {
-  background: hsl(var(--warning));
-  box-shadow: 0 0 0 4px hsl(var(--warning) / 0.14);
-}
-
-.workspace-status-dot.disconnected span {
-  background: hsl(var(--destructive));
-  box-shadow: 0 0 0 4px hsl(var(--destructive) / 0.12);
-}
-
 .workspace-user-menu {
   position: relative;
   z-index: 10;
@@ -629,6 +562,7 @@ textarea:focus-visible {
   flex: 1 1 auto;
   width: 100%;
   min-height: 0;
+  align-items: center;
   flex-direction: column;
   gap: 8px;
   overflow: auto;
@@ -639,8 +573,8 @@ textarea:focus-visible {
 .session-rail-tab {
   display: grid;
   flex: 0 0 auto;
-  width: 100%;
-  height: 38px;
+  width: 42px;
+  height: 42px;
   place-items: center;
   border: 1px solid hsl(var(--border));
   border-radius: calc(var(--radius) - 2px);
@@ -659,7 +593,12 @@ textarea:focus-visible {
 
 .session-rail-action {
   color: hsl(var(--muted-foreground));
-  font-size: 1.15rem;
+}
+
+.session-rail-icon {
+  display: block;
+  width: 18px;
+  height: 18px;
 }
 
 .session-rail-tab.active,
@@ -1854,10 +1793,6 @@ select {
     height: 34px;
   }
 
-  .workspace-sidebar-workspace {
-    padding-inline: 3px;
-  }
-
   .user-menu-popover {
     width: 208px;
   }
@@ -1876,7 +1811,13 @@ select {
 
   .session-rail-action,
   .session-rail-tab {
-    height: 34px;
+    width: 36px;
+    height: 36px;
+  }
+
+  .session-rail-icon {
+    width: 16px;
+    height: 16px;
   }
 
   .app-shell {

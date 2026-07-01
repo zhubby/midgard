@@ -157,12 +157,64 @@ function userInitials(value: string) {
   return initials || "U";
 }
 
-function sessionTabText(session: AgentSessionSummary, index: number) {
-  if (session.has_pending_approval) return "!";
-  const title = session.title.trim();
-  if (!title) return String(index + 1);
+function NewSessionIcon() {
+  return (
+    <svg aria-hidden="true" className="session-rail-icon" viewBox="0 0 20 20">
+      <path
+        d="M10 4.5v11M4.5 10h11"
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeWidth="1.8"
+      />
+    </svg>
+  );
+}
 
-  return String(index + 1);
+function SessionIcon() {
+  return (
+    <svg aria-hidden="true" className="session-rail-icon" viewBox="0 0 20 20">
+      <rect
+        fill="none"
+        height="11"
+        rx="3"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        width="11"
+        x="4.5"
+        y="4.5"
+      />
+      <path
+        d="M7.5 8.2h5M7.5 11.8h3.2"
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeWidth="1.5"
+      />
+    </svg>
+  );
+}
+
+function ApprovalSessionIcon() {
+  return (
+    <svg aria-hidden="true" className="session-rail-icon" viewBox="0 0 20 20">
+      <path
+        d="M10 4.2 16.1 15H3.9L10 4.2Z"
+        fill="none"
+        stroke="currentColor"
+        strokeLinejoin="round"
+        strokeWidth="1.6"
+      />
+      <path
+        d="M10 8.2v3.2"
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeWidth="1.6"
+      />
+      <circle cx="10" cy="13.7" fill="currentColor" r="0.8" />
+    </svg>
+  );
 }
 
 function reduceWorkspace(
@@ -643,24 +695,6 @@ export function WorkspaceShell({
           </div>
         </div>
 
-        <div
-          className="workspace-sidebar-workspace"
-          title={`${context.organization.name} / ${workspace.slug}`}
-        >
-          <strong>{workspace.name.slice(0, 3)}</strong>
-          <span>{workspace.slug.slice(0, 3)}</span>
-        </div>
-
-        <div className="workspace-sidebar-status" aria-label="Workspace state">
-          <span
-            aria-label={state.connectionStatus}
-            className={`workspace-status-dot ${state.connectionStatus}`}
-            title={state.connectionStatus}
-          >
-            <span aria-hidden="true" />
-          </span>
-        </div>
-
         <nav
           aria-label="Agent sessions"
           aria-orientation="vertical"
@@ -675,21 +709,7 @@ export function WorkspaceShell({
             type="button"
             onClick={handleNewSession}
           >
-            +
-          </button>
-          <button
-            aria-label="Live state"
-            aria-selected={!state.activeSessionId}
-            className={`session-rail-tab ${
-              !state.activeSessionId ? "active" : ""
-            }`}
-            disabled={state.busy}
-            role="tab"
-            title={`Live state / ${state.connectionStatus}`}
-            type="button"
-            onClick={() => handleSessionSelect("")}
-          >
-            L
+            <NewSessionIcon />
           </button>
           {state.sessions.map((session, index) => (
             <button
@@ -707,7 +727,11 @@ export function WorkspaceShell({
               type="button"
               onClick={() => handleSessionSelect(session.id)}
             >
-              {sessionTabText(session, index)}
+              {session.has_pending_approval ? (
+                <ApprovalSessionIcon />
+              ) : (
+                <SessionIcon />
+              )}
             </button>
           ))}
         </nav>

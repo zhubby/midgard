@@ -10,6 +10,8 @@ type AuthState =
   | { status: "anonymous"; auth: null; error: string | null }
   | { status: "authenticated"; auth: AuthContext; error: null };
 
+const SESSION_CHECK_TIMEOUT_MS = 1200;
+
 interface AuthGateProps {
   children: (props: {
     auth: AuthContext;
@@ -29,34 +31,38 @@ export function AuthGate({ children }: AuthGateProps) {
 
   useEffect(() => {
     let cancelled = false;
+    let timedOut = false;
     const controller = new AbortController();
-    const timeout = new Promise<null>((resolve) => {
-      window.setTimeout(() => {
-        controller.abort();
-        resolve(null);
-      }, 1200);
-    });
+    const timeoutId = window.setTimeout(() => {
+      if (cancelled) return;
+      timedOut = true;
+      controller.abort();
+      setAuth((current) =>
+        current.status === "loading"
+          ? { status: "anonymous", auth: null, error: null }
+          : current,
+      );
+    }, SESSION_CHECK_TIMEOUT_MS);
 
-    Promise.race([fetchCurrentUser({ signal: controller.signal }), timeout])
+    fetchCurrentUser({ signal: controller.signal })
       .then((user) => {
-        if (!user) {
-          if (!cancelled) {
-            setAuth({ status: "anonymous", auth: null, error: null });
-          }
+        if (cancelled || timedOut) {
           return;
         }
-        if (!cancelled) {
-          setAuth({ status: "authenticated", auth: user, error: null });
-        }
+        window.clearTimeout(timeoutId);
+        setAuth({ status: "authenticated", auth: user, error: null });
       })
       .catch(() => {
-        if (!cancelled) {
-          setAuth({ status: "anonymous", auth: null, error: null });
+        if (cancelled || timedOut) {
+          return;
         }
+        window.clearTimeout(timeoutId);
+        setAuth({ status: "anonymous", auth: null, error: null });
       });
 
     return () => {
       cancelled = true;
+      window.clearTimeout(timeoutId);
       controller.abort();
     };
   }, []);
